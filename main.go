@@ -1,13 +1,8 @@
 package main
 
 import (
-	"bytes"
-	"crypto"
-	"crypto/rsa"
-	"crypto/sha512"
-	"encoding/binary"
+	"errors"
 	"fmt"
-	"math/big"
 	"os"
 
 	"github.com/akamensky/argparse"
@@ -16,36 +11,71 @@ import (
 )
 
 var zeros = [512]byte{0x00}
+const (
+	// also pkcs11.CKM_ECDSA
+	signScheme = pkcs11.CKM_SHA512_RSA_PKCS
+)
 
 func zeroH(numBytes int) []byte {
 	return zeros[:numBytes]
 }
 
+func getSlotList(p *pkcs11.Ctx) ([]uint, error) {
+	slots, err := p.GetSlotList(true)
+	if err != nil {
+		return nil, errors.New("failed to get slots in HSM: " + err.Error())
+	} else if len(slots) == 0 {
+		return nil, errors.New("no slots available in HSM")
+	}
+	return slots, nil
+}
+
+func findHSMkeys(p *pkcs11.Ctx, session pkcs11.SessionHandle, keyLabel string, keyClass interface{}) ([]pkcs11.ObjectHandle, error) {
+	template := []*pkcs11.Attribute{
+		pkcs11.NewAttribute(pkcs11.CKA_CLASS, keyClass),
+		pkcs11.NewAttribute(pkcs11.CKA_LABEL, keyLabel),
+	}
+
+	if e := p.FindObjectsInit(session, template); e != nil {
+		return nil, errors.New("failed to initialize finding key in HSM: " + e.Error())
+	}
+	pvk, _, e := p.FindObjects(session, 1)
+	if e != nil {
+		return nil, errors.New("failed to find key in HSM: " + e.Error())
+	} else if len(pvk) == 0 {
+		return nil, errors.New("no key found in HSM")
+	}
+	if e := p.FindObjectsFinal(session); e != nil {
+		return nil, errors.New("failed to finalize key finding in HSM: " + e.Error())
+	}
+
+	return pvk, nil
+}
+
 func signHSM(moduleLocation string, pin string, keyLabel string, message []byte) []byte {
 	p := pkcs11.New(moduleLocation)
 
+	// ========= INIT MODULE ========== //
 	if p == nil {
-		// No PKCS11 Module Available
-		log.Error("No HSM module available: " + moduleLocation)
+		log.Error("No HSM module available:", moduleLocation)
 		return zeroH(512)
 	}
 	err := p.Initialize()
 	if err != nil {
-		log.Error("Failed to Initialize HSM Module")
+		log.Error("Failed to Initialize HSM")
 		return zeroH(512)
 	}
 	defer p.Destroy()
 	defer p.Finalize()
 
-	slots, err := p.GetSlotList(true)
+	// ========= GET SLOTS ========== //
+	slots, err := getSlotList(p)
 	if err != nil {
-		log.Error("Failed to Get Slots in HSM")
-		return zeroH(512)
-	} else if len(slots) == 0 {
-		log.Error("No Slots Available in HSM")
+		log.Error(err.Error())
 		return zeroH(512)
 	}
 
+	// ========= OPEN SESSION ========== //
 	session, err := p.OpenSession(slots[0], pkcs11.CKF_SERIAL_SESSION|pkcs11.CKF_RW_SESSION)
 	if err != nil {
 		log.Error("Failed to Open Session in HSM")
@@ -60,117 +90,20 @@ func signHSM(moduleLocation string, pin string, keyLabel string, message []byte)
 	}
 	defer p.Logout(session)
 
-	/*
-		========= GET PVK OBJECTS FROM HSM =========
-		This code is intended to be used to get the PVK object from the HSM
-		instead of generating a new one.
-	*/
-	// template := []*pkcs11.Attribute{pkcs11.NewAttribute(pkcs11.CKA_LABEL, keyLabel)}
-	// if e := p.FindObjectsInit(session, template); e != nil {
-	// 	log.Error("Failed to Initialize Finding Key in HSM")
-	// 	return zeroH(512)
-	// }
-	// pvk, _, e := p.FindObjects(session, 2)
-	// if e != nil {
-	// 	log.Error("Failed to Find Key in HSM")
-	// 	return zeroH(512)
-	// } else if len(pvk) == 0 {
-	// 	log.Error("No Key Found in HSM")
-	// 	return zeroH(512)
-	// }
-	// if e := p.FindObjectsFinal(session); e != nil {
-	// 	log.Error("Failed to Finalize Key Finding in HSM")
-	// 	return zeroH(512)
-	// }
-
-	/*
-		========= BEGIN KEY GENERATION =========
-	*/
-	var num uint16 = 4
-	buf := new(bytes.Buffer)
-	err = binary.Write(buf, binary.LittleEndian, num)
+	// ========= FIND PRIVATE KEY ========== //
+	pvk, err := findHSMkeys(p, session, keyLabel, pkcs11.CKO_PRIVATE_KEY)
 	if err != nil {
-		log.Fatalf("binary.Write failed: %v", err)
+		log.Error(err.Error())
+		return zeroH(512)
 	}
-	pubID := buf.Bytes()
-
-	buf = new(bytes.Buffer)
-	num = 5
-	err = binary.Write(buf, binary.LittleEndian, num)
-	if err != nil {
-		log.Fatalf("binary.Write failed: %v", err)
-	}
-	privID := buf.Bytes()
-
-	publicKeyTemplate := []*pkcs11.Attribute{
-		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PUBLIC_KEY),
-		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_RSA),
-		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
-		pkcs11.NewAttribute(pkcs11.CKA_VERIFY, true),
-		pkcs11.NewAttribute(pkcs11.CKA_ENCRYPT, true),
-		pkcs11.NewAttribute(pkcs11.CKA_WRAP, false),
-		pkcs11.NewAttribute(pkcs11.CKA_MODULUS_BITS, 2048),
-		pkcs11.NewAttribute(pkcs11.CKA_LABEL, "pub1"),
-		pkcs11.NewAttribute(pkcs11.CKA_ID, pubID),
-	}
-	privateKeyTemplate := []*pkcs11.Attribute{
-		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
-		pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_RSA),
-		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
-		pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
-		pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, true),
-		pkcs11.NewAttribute(pkcs11.CKA_LABEL, "priv1"),
-		pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
-		pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
-		pkcs11.NewAttribute(pkcs11.CKA_WRAP_WITH_TRUSTED, false),
-		pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, false),
-		pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, true),
-		pkcs11.NewAttribute(pkcs11.CKA_ID, privID),
-	}
-
-	pbk, pvk, err := p.GenerateKeyPair(session,
-		[]*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_RSA_PKCS_KEY_PAIR_GEN, nil)},
-		publicKeyTemplate, privateKeyTemplate)
-	if err != nil {
-		log.Fatalf("failed to generate exportable keypair: %s\n", err)
-	}
-
-	/*
-		========= END KEY GENERATION =========
-	*/
-
-	// Format public key for verification
-
-	pr, err := p.GetAttributeValue(session, pbk, []*pkcs11.Attribute{
-		pkcs11.NewAttribute(pkcs11.CKA_MODULUS, nil),
-		pkcs11.NewAttribute(pkcs11.CKA_PUBLIC_EXPONENT, nil),
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	modulus := new(big.Int)
-	modulus.SetBytes(pr[0].Value)
-	bigExponent := new(big.Int)
-	bigExponent.SetBytes(pr[1].Value)
-	exponent := int(bigExponent.Uint64())
-
-	rsaPub := &rsa.PublicKey{
-		N: modulus,
-		E: exponent,
-	}
-
-	// pubkeyPem := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PUBLIC KEY", Bytes: x509.MarshalPKCS1PublicKey(rsaPub)}))
-	// log.Printf("  Public Key: \n%s\n", pubkeyPem)
 
 	/*
 		========= BEGIN SIGN =========
+		SPEC: RSASSA-PKCS1-v1.5 signature using SHA-512 hash algorithm
 	*/
+	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(signScheme, nil)}
 
-	// RSASSA-PKCS1-v1.5 signature using SHA-512 hash algorithm
-	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_SHA512_RSA_PKCS, nil)}
-
-	if e := p.SignInit(session, mechanism, pvk); e != nil {
+	if e := p.SignInit(session, mechanism, pvk[0]); e != nil {
 		log.Error("Failed to Initialize Signing with HSM: " + e.Error())
 		return zeroH(512)
 	}
@@ -182,16 +115,74 @@ func signHSM(moduleLocation string, pin string, keyLabel string, message []byte)
 	}
 	log.Infof("Signature: %x", signature)
 
-	// Verify signature
-	digest := sha512.Sum512(message)
-	err = rsa.VerifyPKCS1v15(rsaPub, crypto.SHA512, digest[:], signature)
-	if err != nil {
-		log.Printf("Failed verification. Retrying: %s", err)
-		return zeroH(512)
-	}
-	log.Printf("Signature Verified!")
-
 	return signature
+}
+
+func verifyHSM(moduleLocation string, pin string, keyLabel string, signature []byte, message []byte) bool {
+	p := pkcs11.New(moduleLocation)
+
+	// ========= INIT MODULE ========== //
+	if p == nil {
+		log.Error("No HSM module available:", moduleLocation)
+		return false
+	}
+	err := p.Initialize()
+	if err != nil {
+		log.Error("Failed to Initialize HSM")
+		return false
+	}
+	defer p.Destroy()
+	defer p.Finalize()
+
+	// ========= GET SLOTS ========== //
+	slots, err := getSlotList(p)
+	if err != nil {
+		log.Error(err.Error())
+		return false
+	}
+
+	// ========= OPEN SESSION ========== //
+	session, err := p.OpenSession(slots[0], pkcs11.CKF_SERIAL_SESSION|pkcs11.CKF_RW_SESSION)
+	if err != nil {
+		log.Error("Failed to Open Session in HSM")
+		return false
+	}
+	defer p.CloseSession(session)
+
+	err = p.Login(session, pkcs11.CKU_USER, pin)
+	if err != nil {
+		log.Error("Failed to Login in HSM")
+		return false
+	}
+	defer p.Logout(session)
+
+	// ========= FIND PRIVATE KEY ========== //
+	pbk, err := findHSMkeys(p, session, keyLabel, pkcs11.CKO_PUBLIC_KEY)
+	if err != nil {
+		log.Error("Keys not found: ", err.Error())
+		return false
+	}
+	mechanism := []*pkcs11.Mechanism{
+		pkcs11.NewMechanism(signScheme, nil),
+	}
+
+	err = p.VerifyInit(session, mechanism, pbk[0])
+	if err != nil {
+		log.Fatal(err)
+		return false
+	}
+
+	err = p.Verify(session, message, signature)
+	if err == pkcs11.Error(pkcs11.CKR_SIGNATURE_INVALID) {
+		fmt.Println("Signature is invalid.")
+		return false
+	} else if err != nil {
+		log.Fatal(err)
+		return false
+	} else {
+		fmt.Println("Signature is valid.")
+		return true
+	}
 }
 
 func main() {
@@ -211,5 +202,6 @@ func main() {
 	}
 
 	message := []byte("foo")
-	signHSM(*moduleLocationHSM, *pin, *keyLabel, message)
+	signature := signHSM(*moduleLocationHSM, *pin, *keyLabel, message)
+	verifyHSM(*moduleLocationHSM, *pin, *keyLabel, signature, message)
 }
