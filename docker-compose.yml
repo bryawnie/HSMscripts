@@ -1,0 +1,18 @@
+version: "3.7"
+
+services:
+  hsm-playground:
+    container_name: hsm-playground
+    build: 
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - SUBCOMMAND=${SUBCOMMAND}
+        - MODULE_LOCATION=${MODULE_LOCATION}
+        - TOKEN_PIN=${TOKEN_PIN}
+        - KEY_LABEL=${KEY_LABEL}
+        - MESSAGE=${MESSAGE}
+        - SIGNATURE=${SIGNATURE}
+    # devices:
+    #   - /dev/qrandom0
+    #   - /dev/k7pf0

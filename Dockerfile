@@ -6,16 +6,29 @@ WORKDIR /go/app/
 
 RUN go build -o ./bin/app
 
-# Run
+# Runner Container
 FROM alpine:3.18
+
 COPY --from=builder /go/app/bin /go/bin
 
+RUN mkdir -p /usr/safenet/lunaclient
+COPY quantis/bin/EasyQuantis /bin/
+COPY quantis/lib64/ /lib64/
+COPY quantis/lib64/ /lib/x86_64-linux-gnu/
+COPY lunaclient/ /usr/safenet/lunaclient
+
 ARG SUBCOMMAND
-ARG PKCS11_MODULE_LOCATION
-ARG USER_PIN
+ARG MODULE_LOCATION
+ARG TOKEN_PIN
 ARG KEY_LABEL
 ARG MESSAGE
 ARG SIGNATURE
 
+ENV SUBCOMMAND=$SUBCOMMAND
+ENV MODULE_LOCATION=$MODULE_LOCATION
+ENV TOKEN_PIN=$TOKEN_PIN
+ENV KEY_LABEL=$KEY_LABEL
+ENV MESSAGE=$MESSAGE
+ENV SIGNATURE=$SIGNATURE
 
-CMD /go/bin/app $SUBCOMMAND
+CMD /go/bin/app $SUBCOMMAND -l $MODULE_LOCATION -p $TOKEN_PIN -k $KEY_LABEL
