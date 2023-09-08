@@ -13,6 +13,5 @@ services:
         - KEY_LABEL=${KEY_LABEL}
         - MESSAGE=${MESSAGE}
         - SIGNATURE=${SIGNATURE}
-    # devices:
-    #   - /dev/qrandom0
-    #   - /dev/k7pf0
+    devices:
+       - /dev/k7pf0
