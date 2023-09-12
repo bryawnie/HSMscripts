@@ -1,3 +1,5 @@
+certificate
+*.pem
 .env
 lunaclient/
 quantis/

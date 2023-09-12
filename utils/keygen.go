@@ -48,13 +48,16 @@ func KeygenHSM(moduleLocation string, pin string, keyLabel string) {
 	// Generate a key pair (example for RSA)
 	publicKeyTemplate := []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_MODULUS_BITS, 4096),
-		pkcs11.NewAttribute(pkcs11.CKA_LABEL, []byte(keyLabel)),
+		pkcs11.NewAttribute(pkcs11.CKA_PUBLIC_EXPONENT, []byte{3}),
+		pkcs11.NewAttribute(pkcs11.CKA_LABEL, []byte(keyLabel + "-public")),
 		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
+		pkcs11.NewAttribute(pkcs11.CKA_VERIFY, true),
 	}
 	privateKeyTemplate := []*pkcs11.Attribute{
-		pkcs11.NewAttribute(pkcs11.CKA_LABEL, []byte(keyLabel)),
+		pkcs11.NewAttribute(pkcs11.CKA_LABEL, []byte(keyLabel + "-private")),
 		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
 		pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
+		pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
 	}
 	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(keygenMechanism, nil)}
 	_, _, err = p.GenerateKeyPair(session, mechanism, publicKeyTemplate, privateKeyTemplate)
