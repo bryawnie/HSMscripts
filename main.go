@@ -13,14 +13,14 @@ import (
 func main() {
 	fmt.Println("HSM Scripts for Signatures with PKCS#11 v1.5 - SHA512 and Random Number Generator")
 	// Create new parser object
-	parser := argparse.NewParser("app","")
+	parser := argparse.NewParser("app", "")
 
 	// Create use mode flag
 	keygen := parser.NewCommand("keygen", "Generate a new keypair in the HSM")
 	sign := parser.NewCommand("sign", "Sign a message with a key in the HSM")
 	verify := parser.NewCommand("verify", "Verify a message with a key in the HSM")
 	random := parser.NewCommand("random", "Verify a message with a key in the HSM")
-
+	certificate := parser.NewCommand("certificate", "Extract a certificate from the HSM")
 
 	// Create parameter flags
 	moduleLocationHSM := parser.String("l", "location", &argparse.Options{Required: false, Default: "", Help: "HSM Module Location"})
@@ -65,5 +65,8 @@ func main() {
 		random := utils.RandomHSM(*moduleLocationHSM, *pin)
 		strRandom := hex.EncodeToString(random)
 		log.Infof("Random number: %s", strRandom)
+	} else if certificate.Happened() {
+		log.Infof("Extracting certificate with key label %s", *keyLabel)
+		utils.ExtractCertificateHSM(*moduleLocationHSM, *pin, *keyLabel)
 	}
 }

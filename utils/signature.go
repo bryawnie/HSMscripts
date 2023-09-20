@@ -108,7 +108,7 @@ func VerifyHSM(moduleLocation string, pin string, keyLabel string, signature []b
 	}
 	defer p.Logout(session)
 
-	// ========= FIND PRIVATE KEY ========== //
+	// ========= FIND PUBLIC KEY ========== //
 	pbk, err := findHSMkeys(p, session, keyLabel, pkcs11.CKO_PUBLIC_KEY)
 	if err != nil {
 		log.Error("Keys not found: ", err.Error())
