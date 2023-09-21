@@ -56,20 +56,20 @@ func ExtractCertificateHSM(moduleLocation string, pin string, keyLabel string) b
 	}
 
 	if e := p.FindObjectsInit(session, template); e != nil {
+		log.Error("Failed to init Find Public Key in HSM. Error: ", e.Error())
 		return defaultResponse
 	}
 	pbk, _, e := p.FindObjects(session, 1)
 	if e != nil {
+		log.Error("Failed to Find Public Key in HSM. Error: ", e.Error())
 		return defaultResponse
 	} else if len(pbk) == 0 {
+		log.Error("Keys not found: ", err.Error())
 		return defaultResponse
 	}
 	if e := p.FindObjectsFinal(session); e != nil {
+		log.Error("Failed to Find Public Key in HSM. Error: ", e.Error())
 		return defaultResponse
-	}
-	if err != nil {
-		log.Error("Keys not found: ", err.Error())
-		return false
 	}
 
 	publicKeyHandle := pbk[0]
