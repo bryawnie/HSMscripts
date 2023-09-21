@@ -4,7 +4,6 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
 	"math/big"
 
 	"github.com/miekg/pkcs11"
@@ -104,7 +103,7 @@ func ExtractCertificateHSM(moduleLocation string, pin string, keyLabel string) b
 	// Encode the PEM block to a string
 	publicKeyPEM := pem.EncodeToMemory(publicKeyPEMBlock)
 
-	fmt.Printf("Public Key %s (PEM):\n%s\n", keyLabel, string(publicKeyPEM))
+	log.Infof("Public Key %s (PEM):\n%s\n", keyLabel, string(publicKeyPEM))
 
 	return true
 }
