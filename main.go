@@ -19,8 +19,8 @@ func main() {
 	keygen := parser.NewCommand("keygen", "Generate a new keypair in the HSM")
 	sign := parser.NewCommand("sign", "Sign a message with a key in the HSM")
 	verify := parser.NewCommand("verify", "Verify a message with a key in the HSM")
-	random := parser.NewCommand("random", "Verify a message with a key in the HSM")
-	certificate := parser.NewCommand("certificate", "Extract a certificate from the HSM")
+	random := parser.NewCommand("random", "Generate 512 random bites in the HSM")
+	extractPK := parser.NewCommand("extract-key", "Extract public key from the HSM")
 
 	// Create parameter flags
 	moduleLocationHSM := parser.String("l", "location", &argparse.Options{Required: false, Default: "", Help: "HSM Module Location"})
@@ -65,8 +65,8 @@ func main() {
 		random := utils.RandomHSM(*moduleLocationHSM, *pin)
 		strRandom := hex.EncodeToString(random)
 		log.Infof("Random number: %s", strRandom)
-	} else if certificate.Happened() {
-		log.Infof("Extracting certificate with key label %s", *keyLabel)
-		utils.ExtractCertificateHSM(*moduleLocationHSM, *pin, *keyLabel)
+	} else if extractPK.Happened() {
+		log.Infof("Extracting public key (.pem) with key label %s", *keyLabel)
+		utils.ExtractPublicKeyHSM(*moduleLocationHSM, *pin, *keyLabel)
 	}
 }

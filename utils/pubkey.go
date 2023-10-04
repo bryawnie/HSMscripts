@@ -10,7 +10,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func ExtractCertificateHSM(moduleLocation string, pin string, keyLabel string) bool {
+func ExtractPublicKeyHSM(moduleLocation string, pin string, keyLabel string) bool {
 	defaultResponse := false
 	p := pkcs11.New(moduleLocation)
 

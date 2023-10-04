@@ -35,6 +35,12 @@ You can also verify a signature over some message under a keypair with keylabel 
 ./hsm-app verify -m "Your Message" -s <Signature> -l /path/to/libsofthsm2.so -p <TokenPin> -k <KeyLabel>
 ```
 
+### Extract Public Key
+You can also verify a signature over some message under a keypair with keylabel `<KeyLabel>` with:
+```
+./hsm-app extract-key -l /path/to/libsofthsm2.so -p <TokenPin> -k <KeyLabel>
+```
+
 ### [Alternative] Key Generation
 You can also generate keys by console following these steps:
 - Write down the corresponding `<SlotId>`. You can list the available slots with:
