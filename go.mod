@@ -8,5 +8,6 @@ require (
 	github.com/akamensky/argparse v1.4.0
 	github.com/lib/pq v1.10.9
 	github.com/miekg/pkcs11 v1.1.1
-	golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8 // indirect
+	golang.org/x/crypto v0.13.0
+	golang.org/x/sys v0.12.0 // indirect
 )
