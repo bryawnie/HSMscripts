@@ -1,0 +1,2695 @@
+#!/bin/bash
+#**********************************************************************************
+#
+# FileName: crypto/builds/client/unix/install.sh
+#
+# Description: *Nix client install/uninstall
+#
+# Copyright © 2016-18 SafeNet. All rights reserved.
+#
+# This file contains information that is proprietary to SafeNet and may not be
+# distributed or copied without written consent from SafeNet.
+#
+#**********************************************************************************
+
+case "`echo 'x\c'`" in 'x\c')
+                           echo="echo -n"
+                           nnl= ;;
+
+                           x)
+                           echo="echo"
+                           nnl="\c" ;;
+
+esac
+
+VERSION="7.2.0"
+RELEASE="220"
+
+# vkd driver no longer follows build version.
+# Make sure you update the following variable accordingly.
+VKD_PKG_VERSION="6.3.0-4"
+K7_PKG_VERSION=${VERSION}-${RELEASE}
+
+# Legal
+LUNA_LICENSE_DOC="008-010068-001_EULA_HSM7_SW_revA"
+COPYRIGHT_OWNER="SafeNet"
+
+# Setting default values (i.e. used for SA6 or older releases)
+LUNA_SDK_STR="Luna Software Development Kit (SDK)"
+LUNA_CLIENT_STR="Luna Client"
+LUNA_SA_STR="Luna SA"
+LUNA_PCI_STR="Luna PCI-E"
+LUNA_G5_STR="Luna G5"
+LUNA_G7_STR="Luna G7"
+LUNA_REMOTE_BACKUP_STR="Luna Remote Backup HSM"
+
+# Extracting the major version from the release version string
+MAJOR_VERSION="${VERSION%%.*}"
+
+# Making sure that it's numeric. If major version is invalid, for
+# some reasons, then use the default values
+if expr "$MAJOR_VERSION" : '[0-9]' >/dev/null; then
+   if [ $MAJOR_VERSION -ge 7 ]; then
+       LUNA_SDK_STR="Luna SDK"
+       LUNA_CLIENT_STR="Luna HSM Client"
+       LUNA_SA_STR="Luna Network HSM"
+       LUNA_PCI_STR="Luna PCIe HSM"
+       LUNA_G5_STR="Luna USB HSM"
+       LUNA_REMOTE_BACKUP_STR="Luna Backup HSM"
+       COPYRIGHT_OWNER="SafeNet"
+   fi
+fi
+
+IS_OS_HP_UX=0
+IS_OS_AIX=0
+IS_OS_LINUX=0
+
+# Set to 1 to enable the G7 installer option
+ENABLE_G7=0
+
+# Will be set to 1 if we are on a debian Linux machine
+LINUX_DEBIAN=0
+
+INSTALLED="(installed)"
+
+# Currently only linux supports custom install directory.
+INSTALL_DIRECTORY_OPTION="-install_directory"
+PRODUCT_LUNA_PATH="/safenet/lunaclient"
+SUPPORTS_CUSTOM_INSTALL_DIRECTORY=0
+USES_NON_DEFAULT_PREFIX=0
+case `uname -s` in
+    [lL]inux)
+        if [ ! -f /etc/debian_version ]; then
+            SUPPORTS_CUSTOM_INSTALL_DIRECTORY=1
+        fi
+    ;;
+esac
+
+# Used to track the installs rpm database (if empty, it will use default)
+RPMDB_OPTION=
+
+# Used to make decisions if we are root (0) or non-root (1)
+[ "$(id -u)" -eq "0" ] &> /dev/null
+IS_ROOT_USER=$?
+# Disable non-root installation
+if [ $IS_ROOT_USER -eq 1 ] && [ $SUPPORTS_CUSTOM_INSTALL_DIRECTORY -eq 1 ] ; then
+    echo "Installation error: Non-root user detected."
+    echo "Please ensure that you are logged in as root."
+    exit 1
+fi
+
+# Chrystoki.conf variables
+# LunaSA Client Section
+LUNASA_CLIENT_SECTION="LunaSA Client"
+SSL_CONFIG_FILE_SECTION_ATTRIBUTE="SSLConfigFile"
+CLIENT_PRIV_KEY_FILE_SECTION_ATTRIBUTE="ClientPrivKeyFile"
+CLIENT_CERT_FILE_SECTION_ATTRIBUTE="ClientCertFile"
+SERVER_CA_FILE_SECTION_ATTRIBUTE="ServerCAFile"
+# Misc Section
+MISC_SECTION="Misc"
+PPT_PATH_SECTION_ATTRIBUTE="PartitionPolicyTemplatePath"
+# Secure Trusted Channel Section
+STC_SECTION="Secure Trusted Channel"
+SOFT_TOKEN_DIR_SECTION_ATTRIBUTE="SoftTokenDir"
+CLIENT_ID_DIR_SECTION_ATTRIBUTE="ClientIdentitiesDir"
+PARTITION_ID_DIR_SECTION_ATTRIBUTE="PartitionIdentitiesDir"
+# CardReader Section
+SLOT_CONFIG_SECTION="CardReader"
+G7_SLOTS_SECTION_ATTRIBUTE="LunaG7Slots"
+
+# displays status messages
+STATUS=""
+# displays info messages
+INFO=""
+
+# Used for Luna Products selection
+# By default no Luna Product will be installed
+LUNA_SA_SELECTED=" "
+LUNA_PCI_SELECTED=" "
+LUNA_G5_SELECTED=" "
+LUNA_G7_SELECTED=" "
+LUNA_REM_BACKUP_HSM_SELECTED=" "
+
+# Used for Luna Components selection
+# By default no extra components will be installed
+LUNA_SDK_SELECTED=" "
+LUNA_JSP_SELECTED=" "
+LUNA_JCPROV_SELECTED=" "
+LUNA_SNMP_SELECTED=" "
+
+# Initialize variables
+SAVED_LUNA_SDK_SELECTED=" "
+SAVED_LUNA_JSP_SELECTED=" "
+SAVED_LUNA_JCPROV_SELECTED=" "
+SAVED_LUNA_SNMP_SELECTED=" "
+
+# Packages list
+all_client_pkgs=""
+sa_client_pkgs=""
+pci_client_pkgs=""
+g5_client_pkgs=""
+g7_client_pkgs=""
+rb_client_pkgs=""
+sdk_pkgs=""
+jsp_pkgs=""
+jcprov_client_pkgs=""
+snmp_client_pkgs=""
+pedclient_pkgs=""
+
+# Used to track if first time getting into Components selection function
+first_time_in_components=1
+
+# Flag to know whether it is an update install or not
+update_install=0
+
+setup_tools() {
+    case `uname -s` in
+       [sS]unOS)
+           AWK="nawk"
+       ;;
+
+       *)
+           AWK="awk"
+       ;;
+    esac
+}
+
+prompt_yes_no() {
+    rsp=""
+    while [ "$rsp" != "y" ] && [ "$rsp" != "n" ] && [ "$rsp" != "yes" ] && [ "$rsp" != "no" ]
+    do
+        $echo "$1 ${nnl}"
+        read rsp
+    done;
+
+    if [ "$rsp" = "y" ] || [ "$rsp" = "yes" ] ; then
+        return 0
+    fi
+
+    return 1
+}
+
+
+display_and_check_installation_directory() {
+    # Display the installation directory prefix to the user.
+    if [ $SUPPORTS_CUSTOM_INSTALL_DIRECTORY -eq 0 ] ; then
+        return
+    fi
+    if [ $USES_NON_DEFAULT_PREFIX -eq 0 ] ; then
+        echo "Using install directory prefix: \"/usr\" (default)"
+    else
+        echo "Using install directory prefix: \"$install_directory\""
+    fi
+    echo ""
+    # Check if there is already an installation in the folder.
+    if [ -f $LUNA_DEST_PATH/bin/uninstall.sh ] ; then
+        echo "A version of $LUNA_CLIENT_STR is already installed in the provided install directory prefix."
+        echo "Please uninstall it first and launch the installation again or use another install directory."
+        exit 1
+    fi
+    # Check that it is possible to write to the installation directory.
+    mkdir -p $LUNA_DEST_PATH
+    if [ $? -ne 0 ] ; then
+        echo "Installation error: Unable to create the \"$LUNA_DEST_PATH\" directory."
+        exit 1
+    elif [ -d $LUNA_DEST_PATH ] && [ ! -w $LUNA_DEST_PATH ] ; then
+        echo "Installation error: Unable to write to \"$LUNA_DEST_PATH\"."
+        echo "Please ensure that you have permission to write to \"$LUNA_DEST_PATH\"."
+        exit 1
+    fi
+}
+
+
+display_license() {
+    echo "IMPORTANT:  The terms and conditions of use outlined in the software"
+    echo "license agreement document '$LUNA_LICENSE_DOC' (\"License\")"
+    echo "shipped with the product, constitutes a legal agreement between you and"
+    echo "${COPYRIGHT_OWNER}."
+    echo ""
+    echo "Please read the License contained in the packaging of this"
+    echo "product in its entirety before installing this product."
+    echo ""
+    echo "Do you agree to the License contained in the product packaging? "
+    echo ""
+    echo "If you select 'yes' or 'y' you agree to be bound by all the terms"
+    echo "and conditions set out in the License."
+    echo ""
+    echo "If you select 'no' or 'n', this product will not be installed."
+    echo ""
+
+    prompt_yes_no "(y/n)"
+
+    if [ $? -eq 0 ]; then
+        echo ""
+    else
+        echo "You must agree to the license agreement before installing this software."
+        echo "The install will now exit."
+        exit 1
+    fi
+
+    # Get the install directory.
+    get_installation_directory "$*"
+    # Prompt for install directory if not scriptable install.
+    if [ $scriptable_install -eq 0 ]; then
+        prompt_for_install_directory
+    fi
+    display_and_check_installation_directory
+
+    # If Cryptoki package is installed we tell the user to manually uninstall the existing Luna Client first
+    check_pkg_installed $CRYPTOKI_PKG
+    if [ $? -eq 0 ] ; then
+        echo "A version of $LUNA_CLIENT_STR is already installed."
+        echo "Please uninstall it first and launch the installation again."
+        exit 1
+    fi
+}
+
+display_install_parameters() {
+    echo ""
+    $INSTALL_ECHO_E "\t-p <list of Luna products>"
+    $INSTALL_ECHO_E "\t-c <list of Luna components|all>  - Optional. Default components are installed if not provided"
+    if [ $SUPPORTS_CUSTOM_INSTALL_DIRECTORY -eq 1 ] ; then
+        $INSTALL_ECHO_E "\t$INSTALL_DIRECTORY_OPTION <Defaults to /usr>  - Optional. Sets the installation directory prefix."
+        $INSTALL_ECHO_E "\t                                                   Non-root install supports installation of SA"
+        $INSTALL_ECHO_E "\t                                                   product and LUNA SDK, JSP and JCProv components."
+    fi
+    echo ""
+    echo "Luna products options"
+    echo "   sa     - $LUNA_SA_STR"
+
+    if [ $IS_OS_AIX -eq 0 ] ; then
+        echo "   pci    - $LUNA_PCI_STR"
+        if [ $IS_OS_HP_UX -eq 0 ] ; then
+            echo "   g5     - $LUNA_G5_STR"
+            echo "   rb     - $LUNA_REMOTE_BACKUP_STR"
+            if [ $IS_OS_LINUX -eq 1 ] && [ $ENABLE_G7 -eq 1 ] ; then
+                echo "   g7     - $LUNA_G7_STR"
+            fi
+        fi
+    fi
+
+    echo ""
+    echo "Luna components options"
+    echo "   sdk    - $LUNA_SDK_STR"
+    echo "   jsp    - Luna JSP (Java)   --> $LUNA_SA_STR, $LUNA_PCI_STR and $LUNA_G5_STR default component"
+    echo "   jcprov - Luna JCPROV (Java)   --> $LUNA_SA_STR, $LUNA_PCI_STR and $LUNA_G5_STR default component"
+    echo "   snmp   - Luna SNMP subagent"
+    echo ""
+}
+
+display_install_help() {
+    case `uname -s` in
+       [lL]inux)
+           INSTALL_ECHO_E="echo -e"
+       ;;
+
+       *)
+           INSTALL_ECHO_E="echo"
+       ;;
+    esac
+
+    echo ""
+    echo "usage:"
+    $INSTALL_ECHO_E "\tinstall.sh\t- $LUNA_CLIENT_STR install through menu"
+    $INSTALL_ECHO_E "\tinstall.sh help\t- Display scriptable install options"
+    $INSTALL_ECHO_E "\tinstall.sh all\t- Complete $LUNA_CLIENT_STR install"
+    echo ""
+
+    INSTALL_OPTION="\tinstall.sh -p [sa"
+    if [ $IS_OS_AIX -eq 0 ] ; then
+        INSTALL_OPTION="$INSTALL_OPTION|pci"
+        if [ $IS_OS_HP_UX -eq 0 ] ; then
+            INSTALL_OPTION="$INSTALL_OPTION|g5|rb"
+            if [ $IS_OS_LINUX -eq 1 ] && [ $ENABLE_G7 -eq 1 ] ; then
+                INSTALL_OPTION="$INSTALL_OPTION|g7"
+            fi
+        fi
+    fi
+    INSTALL_OPTION="$INSTALL_OPTION] [-c sdk|jsp|jcprov|snmp]"
+    if [ $SUPPORTS_CUSTOM_INSTALL_DIRECTORY -eq 1 ] ; then
+        INSTALL_OPTION="$INSTALL_OPTION  [$INSTALL_DIRECTORY_OPTION </usr>]"
+    fi
+
+    $INSTALL_ECHO_E $INSTALL_OPTION
+    display_install_parameters
+    echo ""
+}
+
+display_usage() {
+    echo ""
+    echo "Invalid option: $1"
+    echo ""
+    echo "usage:"
+    $INSTALL_ECHO_E "\tinstall.sh\t- $LUNA_CLIENT_STR install through menu"
+    $INSTALL_ECHO_E "\tinstall.sh help\t- Display scriptable install options"
+    $INSTALL_ECHO_E "\tinstall.sh all\t- Complete $LUNA_CLIENT_STR install"
+    echo ""
+
+    INSTALL_OPTION="\tinstall.sh -p [sa"
+    if [ $IS_OS_AIX -eq 0 ] ; then
+        INSTALL_OPTION="$INSTALL_OPTION|pci"
+        if [ $IS_OS_HP_UX -eq 0 ] ; then
+            INSTALL_OPTION="$INSTALL_OPTION|g5|rb"
+            if [ $IS_OS_LINUX -eq 1 ] && [ $ENABLE_G7 -eq 1 ] ; then
+                INSTALL_OPTION="$INSTALL_OPTION|g7"
+            fi
+        fi
+    fi
+    INSTALL_OPTION="$INSTALL_OPTION] [-c sdk|jsp|jcprov|snmp]"
+
+    $INSTALL_ECHO_E $INSTALL_OPTION
+
+    display_install_parameters
+    echo "No parameters: Complete $LUNA_CLIENT_STR install"
+    echo "Single parameter: All packages for the selected HSM"
+    echo ""
+}
+
+confirm_install() {
+    echo ""
+    # If user is not root, tell them that components requiring root access will not be installed.
+    if [ $IS_ROOT_USER -eq 1 ] ; then
+        DISPLAY_OPTION="Non-root install detected. $LUNA_CLIENT_STR components requiring root access (drivers and services) will not be installed."
+    else
+        DISPLAY_OPTION="Complete $LUNA_CLIENT_STR will be installed."
+    fi
+    DISPLAY_OPTION="$DISPLAY_OPTION\nThis installation includes $LUNA_SA_STR"
+    if [ $IS_OS_AIX -eq 0 ] && [ $IS_ROOT_USER -eq 0 ] ; then
+        DISPLAY_OPTION="$DISPLAY_OPTION, $LUNA_PCI_STR"
+        if [ $IS_OS_HP_UX -eq 0 ] ; then
+            DISPLAY_OPTION="$DISPLAY_OPTION, $LUNA_G5_STR"
+            if [ $IS_OS_LINUX -eq 1 ] && [ $ENABLE_G7 -eq 1 ] ; then
+                DISPLAY_OPTION="$DISPLAY_OPTION, $LUNA_G7_STR"
+            fi
+            DISPLAY_OPTION="$DISPLAY_OPTION AND $LUNA_REMOTE_BACKUP_STR"
+        fi
+    fi
+    DISPLAY_OPTION="$DISPLAY_OPTION."
+    $INSTALL_ECHO_E $DISPLAY_OPTION
+    echo ""
+    echo "Select 'yes' or 'y' to proceed with the install."
+    echo ""
+    echo "Select 'no' or 'n', to cancel this install."
+    echo ""
+
+    prompt_yes_no "Continue (y/n)?"
+
+    if [ $? -eq 0 ]; then
+        echo ""
+    else
+        echo ""
+        echo "Run install.sh and select the appropriate feature to install:"
+        echo ""
+        $INSTALL_ECHO_E "\tinstall.sh all\t- Complete $LUNA_CLIENT_STR install"
+        INSTALL_OPTION="\tinstall.sh -p [sa"
+        if [ $IS_OS_AIX -eq 0 ] ; then
+        INSTALL_OPTION="$INSTALL_OPTION|pci"
+            if [ $IS_OS_HP_UX -eq 0 ] ; then
+                INSTALL_OPTION="$INSTALL_OPTION|g5|rb"
+                if [ $IS_OS_LINUX -eq 1 ] && [ $ENABLE_G7 -eq 1 ] ; then
+                    INSTALL_OPTION="$INSTALL_OPTION|g7"
+                fi
+            fi
+        fi
+        INSTALL_OPTION="$INSTALL_OPTION] [-c sdk|jsp|jcprov|snmp]"
+
+        $INSTALL_ECHO_E $INSTALL_OPTION
+        display_install_parameters
+        exit 1
+    fi
+}
+
+get_os_info() {
+
+    uninstall=$1
+
+    CMU_PKG="lunacmu"
+    SHIM_PKG="libshim"
+    CONFIG_PKG="lunaconf"
+    VTL_PKG="lunavtl"
+    CKDEMO_PKG="ckdemo"
+    SALOGIN_PKG="salogin"
+    MULTITOKEN_PKG="lunaMT"
+    CKLOG_PKG="cklog"
+    CKSAMPLE_PKG="lunaSAMP"
+    CRYPTOKI_PKG="lunalib"
+    CM_PKG="lunacm"
+    DIAG_PKG="lunadiag"
+    # lunareset replaces ureset + vreset for SA/PCIe release 7.x onwards
+    # so LUNARESET_PKG is undefined otherwise
+    [ $MAJOR_VERSION -ge 7 ] && LUNARESET_PKG="lunareset" || LUNARESET_PKG=""
+    PEDCLIENT_PKG="pedClient"
+    UHD_PKG="uhd"
+    VKD_PKG="vkd"
+    K7_PKG="k7"
+    G7_PKG=""
+    RBS_PKG="rbs"
+    RBS_PROCESSOR_PKG="rbs_processor2"
+
+    LUNAJMT_PKG="lunajmt"
+
+    LUNAJSP_SAMP_PKG="lunajspsamples"
+    LUNAJSP_API_PKG="lunajspapi"
+    LUNAJSP_DOCS_PKG="lunajspdocs"
+    LUNAJSP_JAVA_PKG="lunajspjava"
+
+    JCPROV_SAMP_PKG="lunajcprovsamples"
+    JCPROV_API_PKG="lunajcprovapi"
+    JCPROV_DOCS_PKG="lunajcprovdocs"
+    JCPROV_JAVA_PKG="lunajcprovjava"
+
+    HTLC_PKG="htl_client"
+    LUNA_SNMP_PKG="lunasnmp"
+    LUNA_DEST_PATH="$install_directory$PRODUCT_LUNA_PATH"
+    PTA_PKG=""
+    STC_SOFTTOKEN="safenet-softtoken_client"
+
+    NO_ARCH_RPM="lunajcprovdocs lunajcprovjava lunajcprovsamples lunajmt lunajspdocs lunajspjava lunajspsamples"
+
+    case `uname -s` in
+        [sS]unOS)
+            INSTALL_ECHO_E="echo"
+            INSTALL_ECHO_N="/usr/ucb/echo -n"
+            OSNAME="solaris"
+            PKG_PREFIX="SFNT"
+
+            CRYSTOKI_FILE_SAVE="Chrystoki.conf.dssave"
+            LUNA_DEST_PATH="/opt$PRODUCT_LUNA_PATH"
+
+            VKD_PKG="${PKG_PREFIX}lunak4"
+            VKD_TOOLS="${PKG_PREFIX}vkdTools"
+            UHD_PKG="${PKG_PREFIX}lunauhd"
+            STC_SOFTTOKEN="${PKG_PREFIX}softtoken"
+            RBS_PKG="${PKG_PREFIX}rbs"
+            RBS_PROCESSOR_PKG="${PKG_PREFIX}rbsProcessor2"
+            CONFIG_PKG="${PKG_PREFIX}configurator"
+            CMU_PKG="${PKG_PREFIX}cmu"
+            CRYPTOKI_PKG="${PKG_PREFIX}libcryptoki"
+            VTL_PKG="${PKG_PREFIX}vtl"
+
+            SHIM_PKG=${PKG_PREFIX}${SHIM_PKG}
+            CKDEMO_PKG=${PKG_PREFIX}${CKDEMO_PKG}
+            SALOGIN_PKG=${PKG_PREFIX}${SALOGIN_PKG}
+            MULTITOKEN_PKG=${PKG_PREFIX}${MULTITOKEN_PKG}
+            CKLOG_PKG=${PKG_PREFIX}${CKLOG_PKG}
+            CKSAMPLE_PKG=${PKG_PREFIX}${CKSAMPLE_PKG}
+            CM_PKG=${PKG_PREFIX}${CM_PKG}
+            DIAG_PKG=${PKG_PREFIX}${DIAG_PKG}
+            # lunareset replaces ureset + vreset for SA/PCIe release 7.x onwards
+            # so LUNARESET_PKG is undefined otherwise
+            [ $MAJOR_VERSION -ge 7 ] && LUNARESET_PKG=${PKG_PREFIX}${LUNARESET_PKG} || LUNARESET_PKG=""
+            PEDCLIENT_PKG=${PKG_PREFIX}${PEDCLIENT_PKG}
+
+            LUNAJMT_PKG=${PKG_PREFIX}${LUNAJMT_PKG}
+
+            LUNAJSP_SAMP_PKG=${PKG_PREFIX}${LUNAJSP_SAMP_PKG}
+            LUNAJSP_API_PKG=${PKG_PREFIX}${LUNAJSP_API_PKG}
+            LUNAJSP_DOCS_PKG=${PKG_PREFIX}${LUNAJSP_DOCS_PKG}
+            LUNAJSP_JAVA_PKG=${PKG_PREFIX}${LUNAJSP_JAVA_PKG}
+
+            JCPROV_SAMP_PKG=${PKG_PREFIX}${JCPROV_SAMP_PKG}
+            JCPROV_API_PKG=${PKG_PREFIX}${JCPROV_API_PKG}
+            JCPROV_DOCS_PKG=${PKG_PREFIX}${JCPROV_DOCS_PKG}
+            JCPROV_JAVA_PKG=${PKG_PREFIX}${JCPROV_JAVA_PKG}
+
+            LUNA_SNMP_PKG=${PKG_PREFIX}${LUNA_SNMP_PKG}
+
+            # SA7 no longer includes htl
+            has_htl=`ls ${HTLC_PKG}* 2>/dev/null`
+            if [ "$has_htl" = "" ] && [ $uninstall -eq 0 ] ; then
+                HTLC_PKG=""
+            fi
+
+            # If uninstall, query the OS for the package name
+            if [ $1 -eq 1 ] ; then
+                if ( check_pkg_installed_solaris lunajsp32x86 ) ; then
+                    LUNAJSP_API_PKG="lunajsp32x86"
+                elif ( check_pkg_installed_solaris lunajsp64x86 ) ; then
+                    LUNAJSP_API_PKG="lunajsp64x86"
+                elif ( check_pkg_installed_solaris lunajsp64 ) ; then
+                    LUNAJSP_API_PKG="lunajsp64"
+                elif ( check_pkg_installed_solaris lunajsp ) ; then
+                    LUNAJSP_API_PKG="lunajsp"
+                elif ( check_pkg_installed_solaris ${LUNAJSP_API_PKG} ) ; then
+                    echo ""
+                else
+                    LUNAJSP_API_PKG=""
+                fi
+
+                if ( check_pkg_installed_solaris lunajcprov32x86 ) ; then
+                    JCPROV_API_PKG="lunajcprov32x86"
+                elif ( check_pkg_installed_solaris lunajcprov64x86 ) ; then
+                    JCPROV_API_PKG="lunajcprov64x86"
+                elif ( check_pkg_installed_solaris lunajcprov64 ) ; then
+                    JCPROV_API_PKG="lunajcprov64"
+                elif ( check_pkg_installed_solaris lunajcprov ) ; then
+                    JCPROV_API_PKG="lunajcprov"
+                elif ( check_pkg_installed_solaris ${JCPROV_API_PKG} ) ; then
+                    echo ""
+                else
+                    JCPROV_API_PKG=""
+                fi
+            fi
+            ;;
+
+        HP-UX)
+            INSTALL_ECHO_E="echo"
+            INSTALL_ECHO_N="echo -n"
+            OSNAME="hpux"
+            CRYSTOKI_FILE_SAVE="Chrystoki.conf.depsave"
+            MULTITOKEN_PKG="lunamt"
+            CKSAMPLE_PKG="lunasamp"
+            VKD_PKG="LunaPCI"
+            UHD_PKG=""
+            RBS_PKG=""
+            RBS_PROCESSOR_PKG=""
+            # not ready for hpux yet
+            HTLC_PKG="lunahtlc"
+            PTA_PKG=""
+            LUNA_SNMP_PKG="lunasnmp"
+            LUNA_DEST_PATH="/opt$PRODUCT_LUNA_PATH"
+            STC_SOFTTOKEN="softtoken"
+
+            if [ "`uname -m`" != "ia64" ] ; then
+                # HP-UX PA-RISC is no longer supported
+                echo "$This OS ($OSNAME) is not supported. Please contact SafeNet support"
+                exit 1
+            fi
+            ;;
+
+       [lL]inux)
+            # echo -e does not work on Solaris
+            INSTALL_ECHO_E="echo -e"
+            # echo -n does not work directly on Solaris
+            INSTALL_ECHO_N="echo -n"
+            OSNAME="linux"
+            if [ -f /etc/debian_version ]; then
+                CRYSTOKI_FILE_SAVE="Chrystoki.conf.debsave"
+            else
+                CRYSTOKI_FILE_SAVE="Chrystoki.conf.rpmsave"
+            fi
+            CRYPTOKI_PKG="libcryptoki"
+            MULTITOKEN_PKG="multitoken"
+            CKSAMPLE_PKG="ckSample"
+            VTL_PKG="vtl"
+            CONFIG_PKG="configurator"
+            G7_PKG="g7"
+
+            has_htl=`ls ${HTLC_PKG}* 2>/dev/null`
+            if [ "$has_htl" = "" ] && [ $uninstall -eq 0 ] ; then
+                HTLC_PKG=""
+            fi
+
+            # Get the linux extension if it is not uninstall
+            if [ $1 -ne 1 ] ; then
+                LINUX_FILE_EXTENSION=`ls ${CRYPTOKI_PKG}* | cut -d. -f4`.rpm
+            fi
+
+            # Debian support
+            if [ -f /etc/debian_version ]; then
+                LINUX_DEBIAN=1
+            fi
+            ;;
+
+        AIX)
+            INSTALL_ECHO_E="echo"
+            INSTALL_ECHO_N="echo -n"
+            OSNAME="aix"
+
+            # Not currently available on AIX
+            UHD_PKG=""
+            VKD_PKG=""
+            DIAG_PKG=""
+            LUNARESET_PKG=""
+            PEDCLIENT_PKG=""
+            RBS_PKG=""
+            RBS_PROCESSOR_PKG=""
+            PTA_PKG=""
+            LUNA_SNMP_PKG=""
+            STC_SOFTTOKEN="softtoken"
+
+            has_htl=`ls ${HTLC_PKG}* 2>/dev/null`
+            if [ "$has_htl" = "" ] && [ $uninstall -eq 0 ] ; then
+                HTLC_PKG=""
+            fi
+
+            CRYSTOKI_FILE_SAVE="Chrystoki.conf.bffsave"
+            ;;
+
+        [fF]reeBSD)
+            INSTALL_ECHO_E="echo -e"
+            INSTALL_ECHO_N="echo -n"
+            OSNAME="freebsd"
+
+            DIAG_PKG=""
+            LUNARESET_PKG=""
+            PEDCLIENT_PKG=""
+            RBS_PKG=""
+            RBS_PROCESSOR_PKG=""
+            LUNA_SNMP_PKG=""
+
+            CRYPTOKI_PKG="libcryptoki"
+            MULTITOKEN_PKG="multitoken"
+            VTL_PKG="vtl"
+            CONFIG_PKG="configurator"
+            CMU_PKG="cmu"
+            JCPROV_JAVA_PKG="jcprov"
+            JCPROV_API_PKG="libjcprov"
+            SHIM_PKG="shimLibrary"
+            STC_SOFTTOKEN="softtoken"
+            CKSAMPLE_PKG="ckSample"
+            ADD_PACKAGE=""
+            CRYSTOKI_FILE_SAVE="Chrystoki.conf.bsdsave"
+            ;;
+
+        *)
+            echo "$This OS ($OSNAME) is not supported. Please contact SafeNet support"
+            exit 1
+            ;;
+    esac
+
+    # List of all Luna Client packages to be passed to the uninstall
+    client_uninstall_pkgs="${K7_PKG} ${LUNARESET_PKG} ${VKD_PKG} ${VKD_TOOLS} ${UHD_PKG} ${G7_PKG}"
+    client_uninstall_pkgs="${client_uninstall_pkgs} ${PEDCLIENT_PKG} ${SHIM_PKG} ${VTL_PKG} ${CMU_PKG} ${CKDEMO_PKG} ${MULTITOKEN_PKG} ${SALOGIN_PKG} ${CKLOG_PKG}"
+    client_uninstall_pkgs="${client_uninstall_pkgs} ${DIAG_PKG} ${CM_PKG} ${RBS_PKG} ${RBS_PROCESSOR_PKG} ${PTA_PKG} ${LUNA_SNMP_PKG} ${CKSAMPLE_PKG} ${HTLC_PKG}"
+    client_uninstall_pkgs="${client_uninstall_pkgs} ${JCPROV_SAMP_PKG} ${JCPROV_API_PKG} ${JCPROV_DOCS_PKG} ${JCPROV_JAVA_PKG}"
+    client_uninstall_pkgs="${client_uninstall_pkgs} ${LUNAJSP_SAMP_PKG} ${LUNAJSP_API_PKG} ${LUNAJSP_DOCS_PKG} ${LUNAJSP_JAVA_PKG}"
+    client_uninstall_pkgs="${client_uninstall_pkgs} ${LUNAJMT_PKG} ${STC_SOFTTOKEN} ${CRYPTOKI_PKG} ${CONFIG_PKG}"
+}
+
+set_packages()
+{
+    if [ $update_install -eq 1 ] ; then
+        base_pkgs=""
+    else
+        base_pkgs="${CONFIG_PKG} ${CRYPTOKI_PKG} ${STC_SOFTTOKEN} ${SHIM_PKG} ${CM_PKG} ${CMU_PKG} ${CKDEMO_PKG} ${MULTITOKEN_PKG} ${CKLOG_PKG} ${SALOGIN_PKG}"
+    fi
+
+    # Luna SA specific packages
+    if [ "$LUNA_SA_SELECTED" = "*" ] ; then
+        sa_client_pkgs="${VTL_PKG} ${HTLC_PKG} ${PTA_PKG}"
+    fi
+
+    # Luna PCI-E specific packages
+    if [ "$LUNA_PCI_SELECTED" = "*" ] ; then
+        if [ "$LUNA_SA_SELECTED" = "*" ] ; then
+            # VTL_PKG will be installed with sa_client_pkgs
+            pci_client_pkgs="${DIAG_PKG} ${VKD_PKG} ${VKD_TOOLS} ${LUNARESET_PKG}"
+        else
+            pci_client_pkgs="${VTL_PKG} ${DIAG_PKG} ${VKD_PKG} ${VKD_TOOLS} ${LUNARESET_PKG}"
+        fi
+
+        # The $PEDCLIENT_PKG will be set at the end, after evaluating the installed selections
+        # for G5 and backup HSM
+        has_sa7=$(ls ${K7_PKG}* 2>/dev/null)
+        if [ "$has_sa7" != "" ] ; then
+            pci_client_pkgs=" ${K7_PKG} ${pci_client_pkgs}"
+        fi
+    fi
+
+    # Luna G5 specific packages
+    if [ "$LUNA_G5_SELECTED" = "*" ] ; then
+        # The $PEDCLIENT_PKG will be set at the end, after evaluating the installed selection
+        # backup HSM
+
+        if [ "$LUNA_PCI_SELECTED" = "*" ] ; then
+            # VTL_PKG and DIAG_PKG and LUNARESET_PKG (if applicable) will be installed with pci_client_pkgs
+            g5_client_pkgs="${UHD_PKG}"
+        elif [ "$LUNA_SA_SELECTED" = "*" ] ; then
+            # VTL_PKG will be installed with sa_client_pkgs
+            g5_client_pkgs="${UHD_PKG} ${DIAG_PKG} ${LUNARESET_PKG}"
+        else
+            g5_client_pkgs="${VTL_PKG} ${UHD_PKG} ${DIAG_PKG} ${LUNARESET_PKG}"
+        fi
+    fi
+
+    # Luna G7 specific packages
+    if [ "$LUNA_G7_SELECTED" = "*" ] && [ $ENABLE_G7 -eq 1 ] ; then
+        g7_client_pkgs="${G7_PKG}"
+    fi
+
+    # Luna Remote Backup HSM specific packages
+    # If no other product was selected only Remote Backup HSM tools and driver (G5) should be installed
+    if [ "$LUNA_REM_BACKUP_HSM_SELECTED" = "*" ] ; then
+        # The $PEDCLIENT_PKG will be set at the end
+
+        if [ "$LUNA_SA_SELECTED" != "*" ] && [ "$LUNA_PCI_SELECTED" != "*" ] && [ "$LUNA_G5_SELECTED" != "*" ] ; then
+            base_pkgs="${CONFIG_PKG} ${CRYPTOKI_PKG} ${CM_PKG} ${CKLOG_PKG}"
+            rb_client_pkgs="${UHD_PKG} ${RBS_PROCESSOR_PKG} ${RBS_PKG}  ${DIAG_PKG}"
+        elif [ "$LUNA_PCI_SELECTED" = "*" ] ; then
+            if [ "$LUNA_G5_SELECTED" != "*" ] ; then
+                rb_client_pkgs="${UHD_PKG} ${RBS_PROCESSOR_PKG} ${RBS_PKG}"
+            else
+                rb_client_pkgs="${RBS_PROCESSOR_PKG} ${RBS_PKG}"
+            fi
+        elif [ "$LUNA_G5_SELECTED" = "*" ] ; then
+            rb_client_pkgs="${RBS_PROCESSOR_PKG} ${RBS_PKG}"
+        elif [ "$LUNA_SA_SELECTED" = "*" ] ; then
+            rb_client_pkgs="${UHD_PKG} ${RBS_PROCESSOR_PKG} ${RBS_PKG}  ${DIAG_PKG}"
+        fi
+    fi
+
+    # If at least one of the following packages: LUNA_PCI, LUNA_G5, LUNA_REM_BACKUP_HSM is
+    # selected, then the PEDCLIENT_PKG will be installed.
+    pci_pkgs_string_length=$(expr "$pci_client_pkgs" : ".*")
+    g5_pkgs_string_length=$(expr "$g5_client_pkgs" : ".*")
+    rb_pkgs_string_length=$(expr "$rb_client_pkgs" : ".*")
+    if [ "$pci_pkgs_string_length" -gt 0 ] || [ "$g5_pkgs_string_length" -gt 0 ] || [ "$rb_pkgs_string_length" -gt 0 ]; then
+       pedClient_pkgs=$PEDCLIENT_PKG
+    fi
+
+    # Set packages to "" when only installing products under which they are not supported
+    if [ "$LUNA_SDK_SELECTED" = "*" ] ; then
+        if [ "$LUNA_SA_SELECTED" = "*" ] || [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+            sdk_pkgs="${LUNAJSP_SAMP_PKG} ${CKSAMPLE_PKG} ${JCPROV_SAMP_PKG}"
+        else
+            sdk_pkgs=""
+        fi
+    fi
+
+    if [ "$LUNA_JSP_SELECTED" = "*" ] ; then
+        if [ "$LUNA_SA_SELECTED" = "*" ] || [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+            jsp_pkgs="${LUNAJSP_API_PKG} ${LUNAJMT_PKG} ${LUNAJSP_DOCS_PKG} ${LUNAJSP_JAVA_PKG}"
+        else
+            jsp_pkgs=""
+        fi
+    fi
+
+    if [ "$LUNA_JCPROV_SELECTED" = "*" ] ; then
+        if [ "$LUNA_SA_SELECTED" = "*" ] || [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+            jcprov_client_pkgs="${JCPROV_API_PKG} ${JCPROV_DOCS_PKG} ${JCPROV_JAVA_PKG}"
+        else
+            jcprov_client_pkgs=""
+        fi
+    fi
+
+    if [ "$LUNA_SNMP_SELECTED" = "*" ] ; then
+        if [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_REM_BACKUP_HSM_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+            snmp_client_pkgs="${LUNA_SNMP_PKG}"
+        else
+            snmp_client_pkgs=""
+        fi
+    fi
+
+
+    # If user is not root, tell them that components requiring root access will not be installed.
+    if [ $IS_ROOT_USER -eq 1 ] ; then
+        if [ ! -z "$pci_client_pkgs" ] || [ ! -z "$g5_client_pkgs" ] || [ ! -z "$g7_client_pkgs" ] || [ ! -z "$rb_client_pkgs" ] || [ ! -z "$snmp_client_pkgs" ] ; then
+            if [ $full_client_install -eq 0 ] ; then
+                echo "Non-root install detected. $LUNA_CLIENT_STR components requiring root access (drivers and services) will not be installed."
+            fi
+            echo "The following packages will not be installed:"
+            for rejected_pkg in $pci_client_pkgs $g5_client_pkgs $g7_client_pkgs $rb_client_pkgs $snmp_client_pkgs $pedClient_pkgs
+            do
+                $INSTALL_ECHO_E "\t$rejected_pkg"
+            done
+            echo ""
+            # Unset the fields.
+            pci_client_pkgs=""
+            g5_client_pkgs=""
+            g7_client_pkgs=""
+            rb_client_pkgs=""
+            snmp_client_pkgs=""
+            pedClient_pkgs=""
+        fi
+    fi
+
+    # List of Luna Client packages to be installed based on menu selections or script options
+    # Note: pedClient_pkgs should be installed after pci_client_pkgs/g5_client_pkgs/g5_client_pkgs
+    client_pkgs="$base_pkgs $sa_client_pkgs $pci_client_pkgs $g7_client_pkgs $g5_client_pkgs $rb_client_pkgs $pedClient_pkgs $sdk_pkgs $jsp_pkgs $jcprov_client_pkgs $snmp_client_pkgs"
+}
+
+check_pkg_installed() {
+    check_pkg_installed_$OSNAME $1
+    return $?
+}
+
+remove_pkg() {
+    echo "Removing current version of $1"
+    remove_pkg_$OSNAME $1
+    return $?
+}
+
+add_pkg() {
+    echo "Adding new version of $2"
+    CWD="`pwd`"
+    cd "$1"
+    add_pkg_$OSNAME $2
+    result=$?
+    cd "$CWD"
+    return $result
+}
+
+remove_driver()
+{
+    if [ "$OSNAME" = "linux" ] ; then
+        if ( /sbin/lsmod | grep $1 > /dev/null ) ; then
+            /sbin/rmmod $1 &> /dev/null
+        fi
+
+    elif [ "$OSNAME" = "solaris" ] ; then
+        if ( modinfo | grep $1 > /dev/null ) ; then
+            DRIVER_ID=`modinfo -c | grep $1 | $AWK '{print $1}'`
+            rem_drv $1 > /dev/null 2>&1
+            update_drv $1 > /dev/null 2>&1
+            modunload -i $DRIVER_ID > /dev/null
+        fi
+
+    elif [ "$OSNAME" = "hpux" ] ; then
+        if ( /usr/sbin/lsdev | grep $1 > /dev/null ) ; then
+            /usr/sbin/kcmodule -s $1=uninstall> /dev/null 2>&1
+        fi
+    fi
+
+    return $?
+}
+
+check_remove_driver() {
+
+    remove_driver $1
+    if [ $? -ne 0 ] ; then
+        echo "Aborting $LUNA_CLIENT_STR install...."
+        echo "Luna $2 driver ($1) is in use."
+        echo "Please stop the application using it or restart the machine."
+        # Uninstall what got uninstalled
+        uninstall_client_on_error
+        exit 1
+    fi
+
+}
+
+install_pkg() {
+
+    if [ "$2" = "uhd" ] || [ "$2" = "vkd" ] || [ "$2" = "k7" ] || [ "$2" = "lunauhd" ] || [ "$2" = "lunak4" ] || [ "$2" = "LunaPCI" ] || [ "$2" = "g7" ] ; then
+
+        # Checking the Driver Name
+        if [ "$2" = "vkd" ] || [ "$2" = "k7" ] || [ "$2" = "lunak4" ] || [ "$2" = "LunaPCI" ] ; then
+            DEVICE_NAME="PCI-E"
+        elif [ "$2" = "uhd" ] || [ "$2" = "lunauhd" ]; then
+            DEVICE_NAME="G5"
+        elif [ "$2" = "g7" ]; then
+            DEVICE_NAME="G7"
+        fi
+
+        # Checking Luna G5/PCI driver (uhd or vkd) is in use
+        if [ "$OSNAME" = "hpux" ] ; then
+            DRIVER_NAME="vkd"
+            check_remove_driver $DRIVER_NAME $DEVICE_NAME
+        else
+            check_remove_driver $2 $DEVICE_NAME
+        fi
+
+    fi
+
+    if [ "$2" = "uhd" ] ; then
+        if [ "$OSNAME" = "linux" ] ; then
+            # Install Linux UHD driver
+            install_g5_linux_driver
+        fi
+
+    elif [ "$2" = "vkd" ] || [ "$2" = "k7" ] ; then
+        if [ "$OSNAME" = "linux" ] ; then
+            # Install VKD or K7 driver
+            install_pci_linux_driver $2
+        fi
+    elif [ "$2" = "g7" ]; then
+        if [ "$OSNAME" = "linux" ] ; then
+            # Install Linux G7 driver
+            install_g7_linux_driver
+        fi
+    else
+        add_pkg $1 $2
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to add package $2. Please contact SafeNet support for help."
+            # Uninstall what got uninstalled
+            uninstall_client_on_error
+            exit 1
+        fi
+    fi
+
+}
+
+uninstall_pkg() {
+    if ( check_pkg_installed $1 ) ; then
+        remove_pkg $1
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to remove package $1$2. Please contact SafeNet support for help."
+            exit 1
+        fi
+    fi
+}
+
+install_multi_pkg() {
+    echo ""
+    echo "Installing $1..."
+
+    # Copy the uninstall script right at the beginning.
+    # Note: Install path created to copy the uninstall script
+    # will be deleted if no package was installed.
+    copy_uninstall_script
+
+    for pkg in $3
+    do
+        install_pkg $2 $pkg
+    done
+    return 0
+    echo "Installing done."
+
+    return 1
+}
+
+uninstall_multi_pkg() {
+
+    # Only ask question if $1 is not empty
+    if [ "$1" != "" ] ; then
+        echo ""
+        prompt_yes_no "Are you sure you want to uninstall $1 features specified? (y/n) "
+
+        if [ $? -eq 1 ] ; then
+            return 1
+        fi
+    fi
+
+
+    # Uninstall packages
+    uninst_pkgs_list=$2
+    for pkg in $uninst_pkgs_list
+    do
+        uninstall_pkg $pkg
+    done;
+
+    return 0
+}
+
+check_pkg_installed_linux() {
+    if [ $LINUX_DEBIAN -eq 0 ] ; then
+        rpm -q --quiet $1 $RPMDB_OPTION
+    else
+        # Convert the package name to lowercase since alien
+        # sets the name to lowercase during the install
+        new_pkg=`echo $1 | $AWK '{ print tolower($1); }'`
+
+        # rbs_processor2 is converted to rbs-processor2 by alien command during the install
+        if [ "$new_pkg" = "$RBS_PROCESSOR_PKG" ] ; then
+            new_pkg="rbs-processor2"
+        fi
+        # htl_client is converted to htl-client by alien command during the install
+        if [ "$new_pkg" = "$HTLC_PKG" ] ; then
+            new_pkg="htl-client"
+        fi
+        # safenet-softtoken_client is converted to safenet-softtoken-client by alien command during the install
+        if [ "$new_pkg" = "$STC_SOFTTOKEN" ] ; then
+            new_pkg="safenet-softtoken-client"
+        fi
+
+        eval dpkg -l $new_pkg 2>/dev/null | tail -1 | cut -d" " -f1 | grep -q -e ".i"
+    fi
+
+    return $?
+}
+
+remove_pkg_linux() {
+    if [ $LINUX_DEBIAN -eq 0 ] ; then
+        rpm -e "$pkg" $RPMDB_OPTION
+    else
+        # Convert the package name to lowercase since alien
+        # sets the name to lowercase during the install
+        new_pkg=$(echo "$pkg" | $AWK '{ print tolower($1); }')
+        if [ "$new_pkg" = "$VTL_PKG" ] || [ "$new_pkg" = "$CONFIG_PKG" ] ; then
+            # --remove will remove all files and directories installed by the package
+            PKG_RM_CMD="dpkg -r"
+        else
+            # --purge will remove all files, directories and %config installed by the package
+            PKG_RM_CMD="dpkg --purge"
+
+            # rbs_processor2 is converted to rbs-processor2 by alien command during the install
+            if [ "$new_pkg" = "$RBS_PROCESSOR_PKG" ] ; then
+                new_pkg="rbs-processor2"
+            fi
+            # htl_client is converted to htl-client by alien command during the install
+            if [ "$new_pkg" = "$HTLC_PKG" ] ; then
+                new_pkg="htl-client"
+            fi
+            # safenet-softtoken_client is converted to safenet-softtoken-client by alien command during the install
+            if [ "$new_pkg" = "$STC_SOFTTOKEN" ] ; then
+                new_pkg="safenet-softtoken-client"
+            fi
+        fi
+        $PKG_RM_CMD $new_pkg
+    fi
+
+    return $?
+}
+
+add_pkg_linux() {
+    version=${VERSION}-${RELEASE}
+
+    FILE_EXT=${LINUX_FILE_EXTENSION}
+    echo $NO_ARCH_RPM | grep -qw $1 && FILE_EXT=noarch.rpm
+
+    if [ $LINUX_DEBIAN -eq 0 ] ; then
+        if [ $USES_NON_DEFAULT_PREFIX -eq 1 ] ; then
+            # Nodeps is needed for non-root install as the RPM scriplets require minor things like "sh"
+            # And although they exist on the system, they just don't exist on the non-root custom rpm database.
+            if [ $IS_ROOT_USER -eq 1 ] && [[ "$1" == "$CRYPTOKI_PKG" || "$1" == "$STC_SOFTTOKEN" ]] ; then
+                NODEPS_OPTION="--nodeps"
+            fi
+            RPM_PREFIX_OPTION="--prefix $install_directory"
+            if [ "$1" == "$CRYPTOKI_PKG" ] ; then
+                RPM_PREFIX_OPTION="--relocate /usr=$install_directory"
+                # If we are not a root user, than the Chrystoki.conf goes in the install directory.
+                if [ $IS_ROOT_USER -eq 1 ] ; then
+                    RPM_PREFIX_OPTION="$RPM_PREFIX_OPTION --relocate /etc=$LUNA_DEST_PATH/etc"
+                fi
+            fi
+        fi
+        rpm -ivh $1-$version.${FILE_EXT} $RPMDB_OPTION $NODEPS_OPTION $RPM_PREFIX_OPTION
+    else
+        # Installing on Debian machine
+        alien -k -i --scripts $1-$version.${FILE_EXT}
+    fi
+
+    return $?
+}
+
+check_pkg_installed_solaris() {
+    pkginfo -q $1
+    return $?
+}
+
+add_pkg_solaris() {
+    # -a will use nocheck file to avoid prompts druring the package install.
+    # all_input contains one line with the word "all" needed for the first install prompt
+    # which cannot be be bypassed using the -a option.
+
+    pkgadd -a noask -d $1.ds < all_input
+    return $?
+}
+
+remove_pkg_solaris() {
+    yes | pkgrm $pkg
+    return $?
+}
+
+check_pkg_installed_aix() {
+    lslpp -L | grep $1 >/dev/null
+    return $?
+}
+
+add_pkg_aix() {
+    installp -a -d $pkg.bff all
+    return $?
+}
+
+remove_pkg_aix() {
+    installp -u $pkg
+    return $?
+}
+
+check_pkg_installed_hpux() {
+    swlist $1 2>/dev/null 1>/dev/null
+    return $?
+}
+
+add_pkg_hpux() {
+    swinstall -v -s "`pwd`/$1.dep" $1
+    return $?
+}
+
+remove_pkg_hpux() {
+    swremove -v $1
+    return $?
+}
+
+add_pkg_freebsd() {
+    pkg add ${pkg}Freebsd-$VERSION.txz
+    return $?
+}
+
+remove_pkg_freebsd() {
+    pkg delete -fy ${pkg}Freebsd-$VERSION
+    return $?
+}
+
+check_pkg_installed_freebsd() {
+    pkg info -e ${pkg}Freebsd-$VERSION
+    return $?
+}
+
+# Checks whether PCI or/and G5 or/and G7 drivers are loaded if they got installed
+# After a maximum number of unsuccessful tries we display a message that the
+# driver is installed but not loaded.
+check_drivers_loaded() {
+    drivers_list="vkd uhd k7 g7"
+    vkd_driver_loaded=0
+    uhd_driver_loaded=0
+    k7_driver_loaded=0
+    g7_driver_loaded=0
+
+    for driver in $drivers_list
+    do
+        if ( check_pkg_installed $driver ) ; then
+            # $driver package is installed so check if it is loaded
+            # Found that usbcore line (for uhd) gets returns as well as follow so we extract it
+            # usbcore               123271  4 uhd,uhci_hcd,ehci_hcd
+            /sbin/lsmod | grep $driver | grep -v usbcore
+        fi
+    done
+}
+
+install_client() {
+    # Create custom RPM database for linux if the user is not root.
+    if [ "$OSNAME" = "linux" ] && [ $IS_ROOT_USER -eq 1 ] ; then
+        rpmdb --initdb $RPMDB_OPTION
+    fi
+    # Install clients
+    install_multi_pkg "the $LUNA_CLIENT_STR ${VERSION}-${RELEASE}" "." "$1"
+    if [ $? -ne 0 ] ; then
+        echo "Operation cancelled by user..."
+        exit 1
+    fi
+
+    echo ""
+    echo "Installation of the $LUNA_CLIENT_STR ${VERSION}-${RELEASE} completed."
+    echo ""
+    if [ $SUPPORTS_CUSTOM_INSTALL_DIRECTORY -eq 1 ] ; then
+        if [ $IS_ROOT_USER -eq 1 ] ; then
+            # If the user is not root, tell them that they need to set ChrystokiConfigurationPath to use our software.
+            echo "Product software has been installed under \"$LUNA_DEST_PATH\""
+            echo "To utilize this software please run the following:"
+            echo "    \"export ChrystokiConfigurationPath=$LUNA_DEST_PATH/etc\""
+            echo ""
+        fi
+    fi
+}
+
+uninstall_client() {
+    # Uninstall clients
+    uninstall_multi_pkg "" "$1"
+    if [ $? -ne 0 ] ; then
+        echo "Operation canceled by user..."
+        exit 1
+    fi
+
+    # Cleanup leftover folders
+    rm -fr $LUNA_DEST_PATH/lib
+    rm -fr $LUNA_DEST_PATH/sbin
+    rm -fr $LUNA_DEST_PATH/htl
+    rm -fr $LUNA_DEST_PATH/jsp
+    rm -fr $LUNA_DEST_PATH/jcprov
+    rm -fr $LUNA_DEST_PATH/samples
+    rm -rf $LUNA_DEST_PATH/pcidriver
+    rm -rf $LUNA_DEST_PATH/g5driver
+    rm -rf $LUNA_DEST_PATH/g7driver
+    rm -rf $LUNA_DEST_PATH/snmp
+    # If we are not a root user, delete the rpm database we created at install.
+    if [ $IS_ROOT_USER -eq 1 ] ; then
+        rm -rf $LUNA_DEST_PATH/rpmdb
+    fi
+
+    if [ $LINUX_DEBIAN -eq 1 ] ; then
+        rm -fr $LUNA_DEST_PATH/debian_pkgs
+    fi
+
+    # Moving error output to /dev/null, Solaris and HP-UX produces error output if script tries to remove bin directory in the path of the current working directory.
+    if [ "$OSNAME" = "solaris" ] || [ "$OSNAME" = "hpux" ] || [ "$OSNAME" = "aix" ]; then
+        rm -fr $LUNA_DEST_PATH/bin> /dev/null 2>&1
+    else
+        rm -fr $LUNA_DEST_PATH/bin
+    fi
+
+    echo ""
+    echo "Uninstall of the $LUNA_CLIENT_STR ${VERSION}-${RELEASE} completed."
+    echo ""
+}
+
+save_conf_file() {
+    # save previous version of Chrystoki.conf
+    # For root user, Chrystoki.conf is under /etc
+    # For non-root users, Chrystoki.conf is in their install_directory/etc
+    if [ $IS_ROOT_USER -eq 0 ] ; then
+        CONF_FILE_DIR="/etc"
+    else
+        CONF_FILE_DIR="$LUNA_DEST_PATH/etc"
+    fi
+    if [ -f ${CONF_FILE_DIR}/Chrystoki.conf ] ; then
+        prompt_yes_no "Would you like to backup your Chrystoki.conf file? (y/n)"
+        if [ $? -eq 0 ] ; then
+            cp ${CONF_FILE_DIR}/Chrystoki.conf ${CONF_FILE_DIR}/${CRYSTOKI_FILE_SAVE}
+            echo "It has been saved as ${CONF_FILE_DIR}/${CRYSTOKI_FILE_SAVE}"
+            echo
+        fi
+    fi
+}
+
+does_conf_entry_use_old_path() {
+    SECTION="$1"
+    ENTRY="$2"
+    $CONFIGURATOR checkValue -s "$SECTION" -e "$ENTRY" > /dev/null
+    if [ $? -eq 0 ] ; then
+        # If the config entry value does not match the current install directory path, return 0
+        VALUE=$($CONFIGURATOR getValue -s "$SECTION" -e "$ENTRY" | $AWK '{print $2}' | tr -d \")
+        if [[ "$VALUE" != $LUNA_DEST_PATH* ]] ; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+custom_path_conf_update() {
+    # Update paths Chrystoki.conf and migrate files to the new directory if applicable.
+    # This only applies to root installation using flexible install path.
+    if [ $SUPPORTS_CUSTOM_INSTALL_DIRECTORY -eq 0 ] ; then
+        return
+    fi
+    if [ $IS_ROOT_USER -eq 1 ] ; then
+        return
+    fi
+
+    does_conf_entry_use_old_path "$LUNASA_CLIENT_SECTION" "$SSL_CONFIG_FILE_SECTION_ATTRIBUTE"
+    if [ $? -eq 0 ] ; then
+        \cp -f --preserve $VALUE $LUNA_DEST_PATH/bin/openssl.cnf &> /dev/null
+        $CONFIGURATOR setValue -s "$LUNASA_CLIENT_SECTION" -e $SSL_CONFIG_FILE_SECTION_ATTRIBUTE -v "$LUNA_DEST_PATH/bin/openssl.cnf" > /dev/null
+    fi
+
+    does_conf_entry_use_old_path "$LUNASA_CLIENT_SECTION" "$CLIENT_PRIV_KEY_FILE_SECTION_ATTRIBUTE"
+    if [ $? -eq 0 ] ; then
+        CLIENT_KEY_NAME=$(basename $VALUE)
+        \cp -f --preserve $VALUE $LUNA_DEST_PATH/cert/client/$CLIENT_KEY_NAME &> /dev/null
+        $CONFIGURATOR setValue -s "$LUNASA_CLIENT_SECTION" -e $CLIENT_PRIV_KEY_FILE_SECTION_ATTRIBUTE -v "$LUNA_DEST_PATH/cert/client/$CLIENT_KEY_NAME" > /dev/null
+    fi
+
+    does_conf_entry_use_old_path "$LUNASA_CLIENT_SECTION" "$CLIENT_CERT_FILE_SECTION_ATTRIBUTE"
+    if [ $? -eq 0 ] ; then
+        CLIENT_CERT_NAME=$(basename $VALUE)
+        \cp -f --preserve $VALUE $LUNA_DEST_PATH/cert/client/$CLIENT_CERT_NAME &> /dev/null
+        $CONFIGURATOR setValue -s "$LUNASA_CLIENT_SECTION" -e $CLIENT_CERT_FILE_SECTION_ATTRIBUTE -v "$LUNA_DEST_PATH/cert/client/$CLIENT_CERT_NAME" > /dev/null
+    fi
+
+    does_conf_entry_use_old_path "$LUNASA_CLIENT_SECTION" "$SERVER_CA_FILE_SECTION_ATTRIBUTE"
+    if [ $? -eq 0 ] ; then
+        \cp -f --preserve $(dirname $VALUE)/* $LUNA_DEST_PATH/cert/server/ &> /dev/null
+        \cp -f --preserve $VALUE $LUNA_DEST_PATH/cert/server/CAFile.pem &> /dev/null
+        $CONFIGURATOR setValue -s "$LUNASA_CLIENT_SECTION" -e $SERVER_CA_FILE_SECTION_ATTRIBUTE -v "$LUNA_DEST_PATH/cert/server/CAFile.pem" > /dev/null
+    fi
+
+    does_conf_entry_use_old_path "$MISC_SECTION" "$PPT_PATH_SECTION_ATTRIBUTE"
+    if [ $? -eq 0 ] ; then
+        \cp -rf --preserve $VALUE $LUNA_DEST_PATH/data/partition_policy_templates &> /dev/null
+        $CONFIGURATOR setValue -s "$MISC_SECTION" -e $PPT_PATH_SECTION_ATTRIBUTE -v "$LUNA_DEST_PATH/data/partition_policy_templates" > /dev/null
+    fi
+
+    does_conf_entry_use_old_path "$STC_SECTION" "$SOFT_TOKEN_DIR_SECTION_ATTRIBUTE"
+    if [ $? -eq 0 ] ; then
+        \cp -rf --preserve $VALUE/* $LUNA_DEST_PATH/configData/token/ &> /dev/null
+        $CONFIGURATOR setValue -s "$STC_SECTION" -e $SOFT_TOKEN_DIR_SECTION_ATTRIBUTE -v $LUNA_DEST_PATH/configData/token > /dev/null
+    fi
+
+    does_conf_entry_use_old_path "$STC_SECTION" "$CLIENT_ID_DIR_SECTION_ATTRIBUTE"
+    if [ $? -eq 0 ] ; then
+        STC_CLIENT_ID_DIR=$LUNA_DEST_PATH/data/client_identities
+        # Ensure the directory exists with correct permissions.
+        mkdir -p $STC_CLIENT_ID_DIR 2>/dev/null
+        chmod 777 $STC_CLIENT_ID_DIR
+        \cp -rf --preserve $VALUE/* $STC_CLIENT_ID_DIR/ &> /dev/null
+        $CONFIGURATOR setValue -s "$STC_SECTION" -e $CLIENT_ID_DIR_SECTION_ATTRIBUTE -v $STC_CLIENT_ID_DIR > /dev/null
+    fi
+
+    does_conf_entry_use_old_path "$STC_SECTION" "$PARTITION_ID_DIR_SECTION_ATTRIBUTE"
+    if [ $? -eq 0 ] ; then
+        STC_PARTITION_ID_DIR=$LUNA_DEST_PATH/data/partition_identities
+        # Ensure the directory exists with correct permissions.
+        mkdir -p $STC_PARTITION_ID_DIR 2>/dev/null
+        chmod 777 $STC_PARTITION_ID_DIR
+        \cp -rf --preserve $VALUE/* $STC_PARTITION_ID_DIR/ &> /dev/null
+        $CONFIGURATOR setValue -s "$STC_SECTION" -e $PARTITION_ID_DIR_SECTION_ATTRIBUTE -v $STC_PARTITION_ID_DIR > /dev/null
+    fi
+}
+
+is_virtual_token_configured() {
+    # Note that Chrystoki.conf should aways exist by the time we're here in the installation
+    # process.
+    # Count lines in Chrystoki.conf that contains "VirtualToken" properties with potentially
+    # leading spaces/tabs.  These entries apply to both VirtualToken and VirtualProxyToken sections.
+    virtualTokenSectionCount=$(awk '/^[ \t]*VirtualToken[0-9][0-9]/' ${CONF_FILE_DIR}/Chrystoki.conf | wc -l)
+    if [ "$virtualTokenSectionCount" -gt 0 ] ; then
+        echo true
+    else
+        echo false
+    fi
+}
+
+enable_ha_log() {
+    if [ $(is_virtual_token_configured) = "true" ]; then
+        $CONFIGURATOR setValue -s HAConfiguration -e haLogStatus -v enabled > /dev/null
+    fi
+}
+
+check_random() {
+    # Check and see if /var/run/egd-pool or /dev/random exists
+    # Since /dev/random is better we check for it first
+    if [ ! -r "/dev/random" ] ; then
+       if [ ! -r "/var/run/egd-pool" ] ; then
+          echo "Error: /var/run/egd-pool and /dev/random not found.  Please check the documentation for instructions on installing /var/run/egd-pool or /dev/random."
+          echo "       The installation will now abort."
+          exit 1
+       fi
+    fi
+}
+
+is_any_pkg_installed() {
+
+    for pkg in $all_client_pkgs
+    do
+        check_pkg_installed $pkg
+        if [ $? -eq 0 ] ; then
+            return 0
+        fi
+    done;
+
+    return 1
+}
+
+are_all_pkgs_installed() {
+
+    for pkg in $all_client_pkgs
+    do
+        check_pkg_installed $pkg
+        if [ $? -ne 0 ] ; then
+            return 1
+        fi
+    done;
+
+    return 0
+}
+
+install_g5_linux_driver() {
+    # Install G5 driver
+    SCRIPT_DIR=`pwd`
+
+    # Uninstall any installed version of G5 driver
+    if [ $LINUX_DEBIAN -eq 0 ] ; then
+        if ( rpm -q --quiet uhd-${VERSION} $RPMDB_OPTION ) ; then
+            if ( rpm -e uhd-${VERSION} $RPMDB_OPTION ) ; then
+                echo "Uninstalled existing uhd driver."
+            fi
+        fi
+    else
+        if ( eval dpkg -l uhd 2>/dev/null | tail -1 | cut -d" " -f1 | grep -q -e ".i" ) ; then
+            if ( dpkg --purge uhd ) ; then
+                echo "Uninstalled existing uhd driver."
+            fi
+        fi
+    fi
+
+    if [ -e "$LUNA_DEST_PATH/g5driver" ] ; then
+        rm -rf $LUNA_DEST_PATH/g5driver
+    fi
+
+    if [ ! -r "$LUNA_DEST_PATH/g5driver" ]; then
+        mkdir $LUNA_DEST_PATH/g5driver
+    fi
+
+    # For installing on various arch
+    BITNESS=`getconf LONG_BIT`
+    if [ $BITNESS -eq 32 ] ; then
+        ARCH="i386"
+    else
+        ARCH="x86_64"
+    fi
+
+    cp uhd-${VERSION}-*.src.rpm $LUNA_DEST_PATH/g5driver/
+    cd $LUNA_DEST_PATH/g5driver
+    rpmbuild --rebuild --target $ARCH uhd-${VERSION}-*.src.rpm
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to build G5 driver. Please contact SafeNet support for help."
+        cd "$SCRIPT_DIR"
+        # Uninstall what got uninstalled
+        uninstall_client_on_error
+        exit 1
+    fi
+
+    if [ $LINUX_DEBIAN -eq 0 ] ; then
+        rpm -i ./$ARCH/uhd-${VERSION}-*.$ARCH.rpm $RPMDB_OPTION --relocate /usr/safenet/lunaclient=$install_directory$PRODUCT_LUNA_PATH
+    else
+        alien -k -i --scripts ./$ARCH/uhd-${VERSION}-*.$ARCH.rpm
+    fi
+
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to install G5 driver. Please contact SafeNet support for help."
+        cd "$SCRIPT_DIR"
+        # Uninstall what got uninstalled
+        uninstall_client_on_error
+        exit 1
+    fi
+
+    cd "$SCRIPT_DIR"
+
+    echo ""
+    echo "Installation of the $LUNA_G5_STR ${VERSION}-${RELEASE} driver completed."
+    echo ""
+}
+
+install_pci_linux_driver() {
+    # Install PCI driver
+    DRIVER="$1"
+    if [ "$DRIVER" = "vkd" ]; then
+        PKG_VERSION=${VKD_PKG_VERSION}
+    else
+        if [ "$DRIVER" = "k7" ]; then
+            PKG_VERSION=${K7_PKG_VERSION}
+        fi
+    fi
+
+    SCRIPT_DIR=`pwd`
+
+    # Uninstall any installed version of PCI-E driver
+    if [ $LINUX_DEBIAN -eq 0 ] ; then
+        if ( rpm -q --quiet  ${DRIVER}-${PKG_VERSION} $RPMDB_OPTION ) ; then
+            if ( rpm -e  ${DRIVER}-${PKG_VERSION} $RPMDB_OPTION ) ; then
+                echo "Uninstalled existing ${DRIVER} driver."
+            fi
+        fi
+    else
+        if ( eval dpkg -l ${DRIVER} 2>/dev/null | tail -1 | cut -d" " -f1 | grep -q -e ".i" ) ; then
+            if ( dpkg --purge ${DRIVER} ) ; then
+                echo "Uninstalled existing ${DRIVER} driver."
+            fi
+        fi
+    fi
+
+    if [ -e "$LUNA_DEST_PATH/pcidriver" ] ; then
+        rm -rf $LUNA_DEST_PATH/pcidriver
+    fi
+
+    if [ ! -r "$LUNA_DEST_PATH/pcidriver" ]; then
+        mkdir $LUNA_DEST_PATH/pcidriver
+    fi
+
+    # For installing on various arch
+    BITNESS=`getconf LONG_BIT`
+    if [ $BITNESS -eq 32 ] ; then
+        ARCH="i386"
+    else
+        ARCH="x86_64"
+    fi
+
+    cp ${DRIVER}-${PKG_VERSION}.src.rpm $LUNA_DEST_PATH/pcidriver/
+    cd $LUNA_DEST_PATH/pcidriver
+    rpmbuild --rebuild --target $ARCH ${DRIVER}-${PKG_VERSION}.src.rpm
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to build $LUNA_PCI_STR ${DRIVER} driver. Please contact SafeNet support for help."
+        cd "$SCRIPT_DIR"
+        # Uninstall what got uninstalled
+        uninstall_client_on_error
+        exit 1
+    fi
+
+    if [ $LINUX_DEBIAN -eq 0 ] ; then
+        rpm -i ./$ARCH/${DRIVER}-${PKG_VERSION}.$ARCH.rpm $RPMDB_OPTION --relocate /usr/safenet/lunaclient=$install_directory$PRODUCT_LUNA_PATH
+    else
+        alien -k -i --scripts ./$ARCH/${DRIVER}-${PKG_VERSION}.$ARCH.rpm
+    fi
+
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to install $LUNA_PCI_STR ${DRIVER} driver. Please contact SafeNet support for help."
+        cd "$SCRIPT_DIR"
+        # Uninstall what got uninstalled
+        uninstall_client_on_error
+        exit 1
+    fi
+
+    cd "$SCRIPT_DIR"
+
+    echo ""
+    echo "Installation of the $LUNA_PCI_STR ${DRIVER}-${PKG_VERSION} driver completed."
+    echo ""
+}
+
+install_g7_linux_driver() {
+    # Install G7 driver
+    SCRIPT_DIR=`pwd`
+
+    # Uninstall any installed version of G7 driver
+    if [ $LINUX_DEBIAN -eq 0 ] ; then
+        if ( rpm -q --quiet g7-${VERSION} $RPMDB_OPTION ) ; then
+            if ( rpm -e g7-${VERSION} $RPMDB_OPTION ) ; then
+                echo "Uninstalled existing g7 driver."
+            fi
+        fi
+    else
+        if ( eval dpkg -l g7 2>/dev/null | tail -1 | cut -d" " -f1 | grep -q -e ".i" ) ; then
+            if ( dpkg --purge g7) ; then
+                echo "Uninstalled existing g7 driver."
+            fi
+        fi
+    fi
+
+    if [ -e "$LUNA_DEST_PATH/g7driver" ] ; then
+        rm -rf $LUNA_DEST_PATH/g7driver
+    fi
+
+    if [ ! -r "$LUNA_DEST_PATH/g7driver" ]; then
+        mkdir $LUNA_DEST_PATH/g7driver
+    fi
+
+    # For installing on various arch
+    BITNESS=`getconf LONG_BIT`
+    if [ $BITNESS -eq 32 ] ; then
+        ARCH="i386"
+    else
+        ARCH="x86_64"
+    fi
+
+    cp g7-${VERSION}-*.src.rpm $LUNA_DEST_PATH/g7driver/
+    cd $LUNA_DEST_PATH/g7driver
+    rpmbuild --rebuild --target $ARCH g7-${VERSION}-*.src.rpm
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to build G7 driver. Please contact SafeNet support for help."
+        cd "$SCRIPT_DIR"
+        # Uninstall what got uninstalled
+        uninstall_client_on_error
+        exit 1
+    fi
+
+    if [ $LINUX_DEBIAN -eq 0 ] ; then
+        rpm -i ./$ARCH/g7-${VERSION}-*.$ARCH.rpm $RPMDB_OPTION --prefix $install_directory
+    else
+        alien -k -i --scripts ./$ARCH/g7-${VERSION}-*.$ARCH.rpm
+    fi
+
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to install G7 driver. Please contact SafeNet support for help."
+        cd "$SCRIPT_DIR"
+        # Uninstall what got uninstalled
+        uninstall_client_on_error
+        exit 1
+    fi
+
+    cd "$SCRIPT_DIR"
+
+    echo ""
+    echo "Installation of the $LUNA_G7_STR ${VERSION}-${RELEASE} driver completed."
+    echo ""
+}
+
+# Called to carry out any required post-install activities.
+finish_install()
+{
+    CONFIGURATOR="$LUNA_DEST_PATH/bin/configurator"
+    if [ $IS_ROOT_USER -eq 1 ] ; then
+        export ChrystokiConfigurationPath=$LUNA_DEST_PATH/etc
+    fi
+
+    #
+    # STC setup finalization.
+    #
+    STC_CLIENT_ID_DIR=$LUNA_DEST_PATH/data/client_identities
+    DIREXISTS=`${CONFIGURATOR} checkValue -s "${STC_SECTION}" -e $CLIENT_ID_DIR_SECTION_ATTRIBUTE | $AWK '{print $2}'`
+
+    if [ "x$DIREXISTS" = "xnot" ]
+    then
+        # Folder and entry do not exist, create them now using the default value.
+        ${CONFIGURATOR} setValue -s "${STC_SECTION}" -e $CLIENT_ID_DIR_SECTION_ATTRIBUTE -v $STC_CLIENT_ID_DIR > /dev/null
+        echo Added STC $CLIENT_ID_DIR_SECTION_ATTRIBUTE entry.
+    elif [ "x$DIREXISTS" = "xpresent" ]
+    then
+        STC_CLIENT_ID_DIR=`${CONFIGURATOR} getValue -s "${STC_SECTION}" -e $CLIENT_ID_DIR_SECTION_ATTRIBUTE | $AWK '{print $2}' | tr -d \"`
+    fi
+
+    # Ensure the directory exists with correct permissions.
+    mkdir -p $STC_CLIENT_ID_DIR 2>/dev/null
+    chmod 777 $STC_CLIENT_ID_DIR
+
+    STC_PARTITION_ID_DIR=$LUNA_DEST_PATH/data/partition_identities
+    DIREXISTS=`${CONFIGURATOR} checkValue -s "${STC_SECTION}" -e $PARTITION_ID_DIR_SECTION_ATTRIBUTE | $AWK '{print $2}'`
+
+    if [ "x$DIREXISTS" = "xnot" ]
+    then
+        # Folder and entry do not exist, create them now using the default value.
+        ${CONFIGURATOR} setValue -s "${STC_SECTION}" -e $PARTITION_ID_DIR_SECTION_ATTRIBUTE -v $STC_PARTITION_ID_DIR > /dev/null
+        echo Added STC $PARTITION_ID_DIR_SECTION_ATTRIBUTE entry.
+    elif [ "x$DIREXISTS" = "xpresent" ]
+    then
+        STC_PARTITION_ID_DIR=`${CONFIGURATOR} getValue -s "${STC_SECTION}" -e $PARTITION_ID_DIR_SECTION_ATTRIBUTE | $AWK '{print $2}' | tr -d \"`
+    fi
+
+    # Ensure the directory exists with correct permissions.
+    mkdir -p $STC_PARTITION_ID_DIR 2>/dev/null
+    chmod 777 $STC_PARTITION_ID_DIR
+
+    # Enable G7 slots
+    G7_NUM_SLOTS=3
+    if [ "$LUNA_G7_SELECTED" = "*" ] && [ $ENABLE_G7 -eq 1 ] ; then
+        ${CONFIGURATOR} setValue -s "${SLOT_CONFIG_SECTION}" -e $G7_SLOTS_SECTION_ATTRIBUTE -v $G7_NUM_SLOTS > /dev/null
+    fi
+
+    custom_path_conf_update
+    enable_ha_log
+}
+
+copy_uninstall_script()
+{
+    # Copy uninstall script if installing a package
+    mkdir -p $LUNA_DEST_PATH/bin 2>/dev/null
+
+    # Setting the correct product name to use for "uninstall.sh" as well.
+    # Solaris cannot do inplace editing.
+    sed "s/^LUNA_CLIENT_STR.*/LUNA_CLIENT_STR=\"$LUNA_CLIENT_STR\"/" common > common.new
+    mv -f common.new common
+
+    # Note that file names are changing.
+    # Install becomes common so a user does not try to install from an already installed product
+    # common becomes uninstall.sh so a user does not try to uninstall from the install (source) directory
+    cp -f install.sh $LUNA_DEST_PATH/bin/common
+    if [ $SUPPORTS_CUSTOM_INSTALL_DIRECTORY -eq 1 ] && [ $IS_ROOT_USER -eq 0 ] ; then
+        sed '/INSTALLED_BY_ROOT=.*/c\INSTALLED_BY_ROOT=0' common > $LUNA_DEST_PATH/bin/uninstall.sh
+    else
+        cp -f common $LUNA_DEST_PATH/bin/uninstall.sh
+    fi
+    chmod +x $LUNA_DEST_PATH/bin/uninstall.sh
+
+    # copy plink and pscp
+    cp -f plink $LUNA_DEST_PATH/bin/
+    chmod +x $LUNA_DEST_PATH/bin/plink
+    cp -f pscp $LUNA_DEST_PATH/bin/
+    chmod +x $LUNA_DEST_PATH/bin/pscp
+
+    if [ $LINUX_DEBIAN -eq 1 ] ; then
+        linux_debian_install_setup
+    fi
+}
+
+# Called when an error has occurred during the install to uninstall whatever got installed
+uninstall_client_on_error()
+{
+    if [ "$client_uninstall_pkgs" != "" ] ; then
+        uninstall_client "$client_uninstall_pkgs" > /dev/null 2>&1
+    fi
+}
+
+prompt_for_products()
+{
+    product=$1
+
+    # Check if some Luna Products are already installed and mark them as such
+    # If cryptoki is not installed we know that nothing is installed
+    # Set products packages list just to check if they are already installed and then clear them
+    sa_client_pkgs="${VTL_PKG} ${HTLC_PKG}"
+    pci_client_pkgs="${VTL_PKG} ${VKD_PKG} ${VKD_TOOLS} ${DIAG_PKG} ${LUNARESET_PKG}"
+    g5_client_pkgs="${VTL_PKG} ${UHD_PKG} ${DIAG_PKG} ${LUNARESET_PKG}"
+    g7_client_pkgs="${G7_PKG}"
+    rb_client_pkgs="${UHD_PKG} ${RBS_PKG} ${RBS_PROCESSOR_PKG}"
+    LUNA_SA_INSTALLED=""
+    LUNA_PCI_INSTALLED=""
+    LUNA_G5_INSTALLED=""
+    LUNA_RB_INSTALLED=""
+    LUNA_G7_INSTALLED=""
+
+    check_pkg_installed $CRYPTOKI_PKG
+    if [ $? -eq 0 ] ; then
+        update_install=1
+        # Check if Luna SA is already installed
+        all_client_pkgs=$sa_client_pkgs
+        are_all_pkgs_installed
+        if [ $? -eq 0 ] ; then
+            LUNA_SA_INSTALLED="$INSTALLED"
+        fi
+
+        # Check if Luna PCI is already installed
+        all_client_pkgs=$pci_client_pkgs
+        are_all_pkgs_installed
+        if [ $? -eq 0 ] ; then
+            LUNA_PCI_INSTALLED="$INSTALLED"
+        fi
+
+        # Check if Luna G5 is already installed
+        all_client_pkgs=$g5_client_pkgs
+        are_all_pkgs_installed
+        if [ $? -eq 0 ] ; then
+            LUNA_G5_INSTALLED="$INSTALLED"
+        fi
+
+        # Check if Luna G7 is already installed
+        all_client_pkgs=$g7_client_pkgs
+        are_all_pkgs_installed
+        if [ $? -eq 0 ] ; then
+            LUNA_G7_INSTALLED="$INSTALLED"
+        fi
+
+        # Check if Luna Remote Backup HSM is already installed
+        all_client_pkgs=$rb_client_pkgs
+        are_all_pkgs_installed
+        if [ $? -eq 0 ] ; then
+            LUNA_RB_INSTALLED="$INSTALLED"
+        fi
+    fi
+
+    # Clear all products packages list
+    sa_client_pkgs=""
+    pci_client_pkgs=""
+    g5_client_pkgs=""
+    g7_client_pkgs=""
+    rb_client_pkgs=""
+    all_client_pkgs=""
+
+    case $product in
+        "1")
+            if [ "$LUNA_SA_INSTALLED" = "" ] ; then
+                if [ "$LUNA_SA_SELECTED" = "*" ] ; then
+                    LUNA_SA_SELECTED=" "
+                else
+                    LUNA_SA_SELECTED="*"
+                fi
+            fi
+            ;;
+
+        "2")
+            if [ "$LUNA_PCI_INSTALLED" = "" ] && [ $IS_ROOT_USER -eq 0 ] ; then
+                if [ "$LUNA_PCI_SELECTED" = "*" ] ; then
+                    LUNA_PCI_SELECTED=" "
+                    INFO=""
+                else
+                    LUNA_PCI_SELECTED="*"
+                    # K6 devices are not currently supported when IOMMU is being used
+                    # For Intel it's intel_iommu and for AMD it's iommu
+                    if [ -n "$(lspci -d cafe:0007 2>/dev/null)" ] && grep -q iommu /proc/cmdline; then
+                       INFO=" NOTE: IOMMU support (typically required for Virtualization w/device pass-through) is enabled on\n"
+                       INFO+="       this host. SafeNet PCIe HSM versions 5.x-6.x are currently unsupported in this configuration\n"
+                    fi
+               fi
+            fi
+            ;;
+
+        "3")
+            if [ "$LUNA_G5_INSTALLED" = "" ] && [ $IS_ROOT_USER -eq 0 ] ; then
+                if [ "$LUNA_G5_SELECTED" = "*" ] ; then
+                    LUNA_G5_SELECTED=" "
+                else
+                    LUNA_G5_SELECTED="*"
+                fi
+            fi
+            ;;
+
+        "4")
+            if [ "$LUNA_RB_INSTALLED" = "" ] && [ $IS_ROOT_USER -eq 0 ] ; then
+                if [ "$LUNA_REM_BACKUP_HSM_SELECTED" = "*" ] ; then
+                    LUNA_REM_BACKUP_HSM_SELECTED=" "
+                else
+                    LUNA_REM_BACKUP_HSM_SELECTED="*"
+                fi
+            fi
+            ;;
+        "5")
+            if [ "$LUNA_G7_INSTALLED" = "" ] && [ $ENABLE_G7 -eq 1 ] && [ $IS_ROOT_USER -eq 0 ] ; then
+                if [ "$LUNA_G7_SELECTED" = "*" ] ; then
+                    LUNA_G7_SELECTED=" "
+                else
+                    LUNA_G7_SELECTED="*"
+                fi
+            fi
+            ;;
+
+    esac
+
+    clear
+    echo "Products"
+    echo "Choose Luna Products to be installed"
+    echo
+    echo " ${LUNA_SA_SELECTED}[1]: $LUNA_SA_STR $LUNA_SA_INSTALLED"
+    if [ $IS_OS_AIX -eq 0 ] && [ $IS_ROOT_USER -eq 0 ] ; then
+        echo
+        echo " ${LUNA_PCI_SELECTED}[2]: $LUNA_PCI_STR $LUNA_PCI_INSTALLED"
+        if [ $IS_OS_HP_UX -eq 0 ] ; then
+            echo
+            echo " ${LUNA_G5_SELECTED}[3]: $LUNA_G5_STR $LUNA_G5_INSTALLED"
+            echo
+            echo " ${LUNA_REM_BACKUP_HSM_SELECTED}[4]: $LUNA_REMOTE_BACKUP_STR $LUNA_RB_INSTALLED"
+            if [ $IS_OS_LINUX -eq 1 ] && [ $ENABLE_G7 -eq 1 ] ; then
+                echo
+                echo " ${LUNA_G7_SELECTED}[5]: $LUNA_G7_STR $LUNA_G7_INSTALLED"
+            fi
+        fi
+    fi
+    echo
+    echo "  [N|n]: Next"
+    echo
+    echo "  [Q|q]: Quit"
+    echo
+    if [ "$STATUS" != "" ] ; then
+       echo "$STATUS"
+       echo
+    fi
+
+    if [ "$INFO" != "" ] ; then
+       printf "$INFO"
+    fi
+
+    #$INSTALL_ECHO_N " Enter selection: "
+    $echo " Enter selection: ${nnl} "
+}
+
+prompt_for_components()
+{
+    component=$1
+    # Count of selectable components after the products selection
+    components_count=0
+
+    # Check if some Luna Products are already installed and mark them as such
+    # If cryptoki is not installed we know that nothing is installed
+    # Set products packages list just to check if they are already installed and then clear them
+    sdk_pkgs="${LUNAJSP_SAMP_PKG} ${CKSAMPLE_PKG} ${JCPROV_SAMP_PKG}"
+    jsp_pkgs="${LUNAJSP_API_PKG} ${LUNAJMT_PKG} ${LUNAJSP_DOCS_PKG} ${LUNAJSP_JAVA_PKG}"
+    jcprov_client_pkgs="${JCPROV_API_PKG} ${JCPROV_DOCS_PKG} ${JCPROV_JAVA_PKG}"
+    snmp_client_pkgs="${LUNA_SNMP_PKG}"
+    LUNA_SDK_INSTALLED=""
+    LUNA_JSP_INSTALLED=""
+    LUNA_JCPROV_INSTALLED=""
+    LUNA_SNMP_INSTALLED=""
+
+    check_pkg_installed $CRYPTOKI_PKG
+    if [ $? -eq 0 ] ; then
+        update_install=1
+        # Check if Luna SDK is already installed
+        all_client_pkgs=$sdk_pkgs
+        are_all_pkgs_installed
+        if [ $? -eq 0 ] ; then
+            LUNA_SDK_INSTALLED="$INSTALLED"
+        fi
+
+        # Check if Luna JSP is already installed
+        all_client_pkgs=$jsp_pkgs
+        are_all_pkgs_installed
+        if [ $? -eq 0 ] ; then
+            LUNA_JSP_INSTALLED="$INSTALLED"
+        fi
+
+        # Check if Luna JCPROV is already installed
+        all_client_pkgs=$jcprov_client_pkgs
+        are_all_pkgs_installed
+        if [ $? -eq 0 ] ; then
+            LUNA_JCPROV_INSTALLED="$INSTALLED"
+        fi
+
+        # Check if Luna SNMP subagent is already installed
+        all_client_pkgs=$snmp_client_pkgs
+        are_all_pkgs_installed
+        if [ $? -eq 0 ] ; then
+            LUNA_SNMP_INSTALLED="$INSTALLED"
+        fi
+    fi
+
+    # Clear all components packages list
+    sdk_pkgs=""
+    jsp_pkgs=""
+    jcprov_client_pkgs=""
+    snmp_client_pkgs=""
+    all_client_pkgs=""
+
+    if [ $first_time_in_components -eq 1 ] ; then
+        # When coming to components selection for the first time with components already installed we need to clear the default selection on installed components
+        if [ "$LUNA_SDK_INSTALLED" != "" ] ; then
+            LUNA_SDK_SELECTED=" "
+        fi
+        if [ "$LUNA_JSP_INSTALLED" != "" ] ; then
+            LUNA_JSP_SELECTED=" "
+        fi
+        if [ "$LUNA_JCPROV_INSTALLED" != "" ] ; then
+            LUNA_JCPROV_SELECTED=" "
+        fi
+        if [ "$LUNA_SNMP_INSTALLED" != "" ] ; then
+            LUNA_SNMP_SELECTED=" "
+        fi
+    elif [ $first_time_in_components -gt 2 ] ; then
+        LUNA_SDK_SELECTED="$SAVED_LUNA_SDK_SELECTED"
+        LUNA_JSP_SELECTED="$SAVED_LUNA_JSP_SELECTED"
+        LUNA_JCPROV_SELECTED="$SAVED_LUNA_JCPROV_SELECTED"
+        LUNA_SNMP_SELECTED="$SAVED_LUNA_SNMP_SELECTED"
+        LUNA_SNMP_SELECTED="$SAVED_LUNA_SNMP_SELECTED"
+    fi
+
+    case $component in
+        "1")
+            if [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_SA_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+                if [ "$LUNA_SDK_INSTALLED" = "" ] ; then
+                    if [ "$LUNA_SDK_SELECTED" = "*" ] ; then
+                        LUNA_SDK_SELECTED=" "
+                    else
+                        LUNA_SDK_SELECTED="*"
+                    fi
+                else
+                    LUNA_SDK_SELECTED=" "
+                fi
+            else
+                # Right now only Remote Backup HSM product supports only one product.
+                # So the only component to display is Luna SNMP subagent
+                if [ "$LUNA_SNMP_INSTALLED" = "" ] ; then
+                    if [ "$LUNA_SNMP_SELECTED" = "*" ] ; then
+                        LUNA_SNMP_SELECTED=" "
+                    else
+                        LUNA_SNMP_SELECTED="*"
+                    fi
+                else
+                    LUNA_SNMP_SELECTED=" "
+                fi
+            fi
+            ;;
+
+        "2")
+            if [ "$LUNA_JSP_INSTALLED" = "" ] ; then
+                if [ "$LUNA_JSP_SELECTED" = "*" ] ; then
+                    LUNA_JSP_SELECTED=" "
+                else
+                    LUNA_JSP_SELECTED="*"
+                fi
+            else
+                LUNA_JSP_SELECTED=" "
+            fi
+            ;;
+
+        "3")
+            if [ "$LUNA_JCPROV_INSTALLED" = "" ] ; then
+                if [ "$LUNA_JCPROV_SELECTED" = "*" ] ; then
+                    LUNA_JCPROV_SELECTED=" "
+                else
+                    LUNA_JCPROV_SELECTED="*"
+                fi
+            else
+                LUNA_JCPROV_SELECTED=" "
+            fi
+            ;;
+
+        "4")
+            if [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+                if [ "$LUNA_SNMP_INSTALLED" = "" ] ; then
+                    if [ "$LUNA_SNMP_SELECTED" = "*" ] ; then
+                        LUNA_SNMP_SELECTED=" "
+                    else
+                        LUNA_SNMP_SELECTED="*"
+                    fi
+                else
+                    LUNA_SNMP_SELECTED=" "
+                fi
+            fi
+            ;;
+
+    esac
+
+    first_time_in_components=`expr $first_time_in_components + 1`
+
+    # Save the default components previous selection values
+    SAVED_LUNA_SDK_SELECTED="$LUNA_SDK_SELECTED"
+    SAVED_LUNA_JSP_SELECTED="$LUNA_JSP_SELECTED"
+    SAVED_LUNA_JCPROV_SELECTED="$LUNA_JCPROV_SELECTED"
+    SAVED_LUNA_SNMP_SELECTED="$LUNA_SNMP_SELECTED"
+    SAVED_LUNA_SNMP_SELECTED="$LUNA_SNMP_SELECTED"
+
+    clear
+    echo "Advanced"
+    echo "Choose Luna Components to be installed"
+    # If only Luna Remote Backup HSM is the only selected product then only Luna SNMP subagent should be displayed
+    if [ "$LUNA_SA_SELECTED" = "*" ] || [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+        echo
+        components_count=`expr $components_count + 1`
+        echo " ${LUNA_SDK_SELECTED}[$components_count]: $LUNA_SDK_STR $LUNA_SDK_INSTALLED"
+        echo
+        components_count=`expr $components_count + 1`
+        echo " ${LUNA_JSP_SELECTED}[$components_count]: Luna JSP (Java) $LUNA_JSP_INSTALLED"
+        echo
+        components_count=`expr $components_count + 1`
+        echo " ${LUNA_JCPROV_SELECTED}[$components_count]: Luna JCProv (Java) $LUNA_JCPROV_INSTALLED"
+    fi
+    if [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_REM_BACKUP_HSM_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+        echo
+        components_count=`expr $components_count + 1`
+        echo " ${LUNA_SNMP_SELECTED}[$components_count]: Luna SNMP subagent $LUNA_SNMP_INSTALLED"
+    fi
+    echo
+    echo "  [B|b]: Back to Products selection"
+    echo
+    echo "  [I|i]: Install"
+    echo
+    echo "  [Q|q]: Quit"
+    echo
+    #echo " Enter selection: "
+    $echo " Enter selection: ${nnl} "
+}
+
+select_luna_products_and_components()
+{
+option=""
+product_selected=0
+
+# user must select at least one product before they can
+# select individual components
+while [ $product_selected -ne 1 ]
+do
+    prompt_for_products "$option"
+    read option
+    STATUS=""
+
+    if [ "$option" = "q" ] || [ "$option" = "Q" ] ; then
+        prompt_yes_no "Abort installation? (y/n) "
+        if [ $? -eq 0 ] ; then
+            exit 1
+        fi
+    fi
+
+    if [ $IS_OS_AIX -eq 1 ]; then
+        LUNA_PCI_SELECTED=" "
+        if [ $IS_OS_HP_UX -eq 1 ]; then
+            LUNA_G5_SELECTED=" "
+            LUNA_REM_BACKUP_HSM_SELECTED=" "
+        fi
+    fi
+
+    if [ "$option" = "n" ] || [ "$option" = "N" ] ; then
+        product_selected=1
+        # If no Luna products are installed then at least one must be selected in order to move to components selection
+        if [ "$LUNA_SA_INSTALLED" = "" ] && [ "$LUNA_PCI_INSTALLED" = "" ] && [ "$LUNA_G5_INSTALLED" = "" ] && [ "$LUNA_RB_INSTALLED" = "" ] && [ "$LUNA_G7_INSTALLED" = "" ] ; then
+            if [ "$LUNA_SA_SELECTED" = " " ] && [ "$LUNA_PCI_SELECTED" = " " ] && [ "$LUNA_G5_SELECTED" = " " ] && [ "$LUNA_REM_BACKUP_HSM_SELECTED" = " " ] && [ "$LUNA_G7_SELECTED" = " " ] ; then
+                STATUS="*** At least one product must be selected."
+                product_selected=0
+            fi
+        fi
+    fi
+done;
+
+option=""
+while  [ "$option" != "b" ] && [ "$option" != "B" ] && [ "$option" != "i" ] && [ "$option" != "I" ]
+do
+    if [ "$option" = "q" ] || [ "$option" = "Q" ] ; then
+        prompt_yes_no "Abort installation? (y/n) "
+        if [ $? -eq 0 ] ; then
+            exit 1
+        fi
+    fi
+
+    prompt_for_components "$option"
+    read option
+done;
+}
+
+set_install_directory()
+{
+tmp_install_directory="$1"
+length=${#tmp_install_directory}
+if [ ${length} -eq 0 ] ; then
+    return
+fi
+# Make the first character a forward slash "/"
+[ ${tmp_install_directory:0:1} != "/" ] && tmp_install_directory="/$tmp_install_directory"
+# Remove the last character if it is a forward slash "/"
+length=${#tmp_install_directory}
+[ ${tmp_install_directory:length-1:1} == "/" ] && tmp_install_directory="${tmp_install_directory:0:length-1}"
+# Strip excess forward slashes "/path///to//place" -> "/path/to/place"
+tmp_install_directory="${tmp_install_directory//\/*(\/)/\/}"
+# Update common variables
+install_directory="$tmp_install_directory"
+LUNA_DEST_PATH="$install_directory$PRODUCT_LUNA_PATH"
+if [ "$install_directory" != "/usr" ] ; then
+    USES_NON_DEFAULT_PREFIX=1
+    # If we are not a root user, use the custom user local rpm database.
+    if [ $IS_ROOT_USER -eq 1 ] ; then
+        RPMDB_OPTION="--dbpath $LUNA_DEST_PATH/rpmdb"
+    fi
+fi
+}
+
+prompt_for_install_directory()
+{
+# Leave function if the OS doesn't have custom install directory support.
+if [ $SUPPORTS_CUSTOM_INSTALL_DIRECTORY -eq 0 ] ; then
+    return
+fi
+
+if [ $IS_ROOT_USER -eq 1 ] ; then
+    echo "Non-root install supports installation of the following:"
+    for available_item in "$LUNA_SA_STR" "Luna SDK" "Luna JSP (Java)" "Luna JCPROV (Java)"
+    do
+        $INSTALL_ECHO_E "    $available_item"
+    done
+fi
+echo "Enter install directory: [$install_directory]"
+read -e temp_install_directory
+set_install_directory "$temp_install_directory"
+}
+
+install_directory="/usr"
+get_install_directory=0
+# Get the installation
+get_installation_directory()
+{
+args="$1"
+# Leave function if the OS doesn't have custom install directory support.
+if [ $SUPPORTS_CUSTOM_INSTALL_DIRECTORY -eq 0 ] ; then
+    return
+fi
+
+for arg in $args
+do
+    if [ "$arg" = "$INSTALL_DIRECTORY_OPTION" ] ; then
+        get_install_directory=1
+    elif [ $get_install_directory -eq 1 ] ; then
+        set_install_directory "$arg"
+        get_install_directory=0
+    fi
+done
+}
+
+# Products and components list passed in to scriptable install
+products_list=""
+components_list=""
+scriptable_get_products_and_components()
+{
+args="$1"
+products=0
+components=0
+
+for arg in $args
+do
+    if [ "$arg" = "-p" ] ; then
+        products=1
+        components=0
+    elif [ "$arg" = "-c" ] ; then
+        components=1
+        products=0
+    elif [ "$arg" = "$INSTALL_DIRECTORY_OPTION" ] ; then
+        get_install_directory=1
+        components=0
+        products=0
+    elif [ $products -eq 1 ] ; then
+        if [ "$products_list" = "" ] ; then
+            products_list="$arg"
+        else
+            products_list="$products_list $arg"
+        fi
+    elif [ $components -eq 1 ] ; then
+        if [ "$components_list" = "" ] ; then
+            components_list="$arg"
+        else
+            components_list="$components_list $arg"
+        fi
+    elif [ $get_install_directory -eq 1 ] ; then
+        if [ $SUPPORTS_CUSTOM_INSTALL_DIRECTORY -eq 1 ] ; then
+            set_install_directory "$arg"
+        fi
+        get_install_directory=0
+    fi
+done
+
+new_product_list=""
+for product in $products_list
+do
+    case "$product" in
+        sa|SA)
+            new_product_list="$new_product_list $product"
+        ;;
+
+        pci|PCI)
+            if [ $IS_OS_AIX -eq 0 ]; then
+                new_product_list="$new_product_list $product"
+            fi
+
+        ;;
+
+        g5|G5)
+            if [ $IS_OS_AIX -eq 0 ] && [ $IS_OS_HP_UX -eq 0 ] ; then
+                new_product_list="$new_product_list $product"
+            fi
+        ;;
+
+        g7|G7)
+            if [ $IS_OS_LINUX -eq 1 ] && [ $ENABLE_G7 -eq 1 ]; then
+                new_product_list="$new_product_list $product"
+            fi
+        ;;
+
+        rb|RB)
+                if [ $IS_OS_AIX -eq 0 ] && [ $IS_OS_HP_UX -eq 0 ] ; then
+                new_product_list="$new_product_list $product"
+                        fi
+        ;;
+    esac
+done
+products_list="$new_product_list"
+
+if [ "$products_list" = "" ] ; then
+    echo "At least one product should be specified."
+    display_install_help
+    exit 1
+fi
+}
+
+
+# If on Linux debian machine we copy the rpms to a directory on local drive
+# so that we can use alien command
+# We first check whether all necessary commands are installed
+linux_debian_install_setup()
+{
+    which alien 2>/dev/null 1>&2
+    if [ $? -ne 0 ] ; then
+        echo "alien command was not found."
+        echo "Please install alien package and launch the install again."
+        exit 1
+    fi
+
+    which rpmbuild 2>/dev/null 1>&2
+    if [ $? -ne 0 ] ; then
+        echo "rpmbuild command was not found."
+        echo "Please install rpmbuild package and launch the install again."
+        exit 1
+    fi
+
+    mkdir -p $LUNA_DEST_PATH/debian_pkgs 2>/dev/null
+    cp * $LUNA_DEST_PATH/debian_pkgs
+    cd $LUNA_DEST_PATH/debian_pkgs
+}
+
+# The following method checks to see if the driver is in use.
+# If so, abort uninstall.
+verify_uninstallable_driver()
+{
+    remove_driver $1
+    if [ $? -ne 0 ] ; then
+        echo "Aborting $LUNA_CLIENT_STR uninstall...."
+        echo "Luna $1 driver is in use."
+        echo "Please stop the application using it or restart the machine."
+        exit 1
+    fi
+}
+
+# The following methods are for stopping SafeNet services.
+shutdown_services_linux()
+{
+    service luna-snmp status > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        service luna-snmp stop
+    fi
+    service htlc_service status > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        service htlc_service stop
+    fi
+    service pedclient_service status > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        service pedclient_service stop
+    fi
+}
+
+shutdown_services_solaris()
+{
+    SERVICE=`ps -ef | grep -v grep | grep -c $LUNA_DEST_PATH/snmp/luna-snmp`
+    if [ "$SERVICE" = "1" ]; then
+        /etc/init.d/luna-snmp stop
+    fi
+   SERVICE=`ps -ef | grep -v grep | grep -c $LUNA_DEST_PATH/bin/pedClient`
+    if [ "$SERVICE" = "1" ]; then
+        /etc/init.d/pedclient_service stop
+    fi
+    SERVICE=`ps -ef | grep -v grep | grep -c $LUNA_DEST_PATH/htl/htl_client`
+    if [ "$SERVICE" = "1" ]; then
+        /etc/init.d/htlc_service stop
+    fi
+}
+
+shutdown_services_hpux()
+{
+    SERVICE=`ps -ef | grep -v grep | grep -c $LUNA_DEST_PATH/snmp/luna-snmp`
+    if [ "$SERVICE" = "1" ]; then
+        /usr/local/bin/bash /sbin/init.d/luna-snmp stop
+    fi
+    SERVICE=`ps -ef | grep -v grep | grep -c $LUNA_DEST_PATH/bin/pedClient`
+    if [ "$SERVICE" = "1" ]; then
+        /usr/local/bin/bash /sbin/init.d/pedclient_service stop
+    fi
+    SERVICE=`ps -ef | grep -v grep | grep -c $LUNA_DEST_PATH/htl/htl_client`
+    if [ "$SERVICE" = "1" ]; then
+        /usr/local/bin/bash /sbin/init.d/htlc_service stop
+    fi
+}
+
+shutdown_services_aix()
+{
+    PROCESS_ID=`ps -e -o pid,command | grep htl_client|$AWK '{print $1}'`
+    if [ "$PROCESS_ID" != "" ]; then
+        kill -9 $PROCESS_ID
+    fi
+}
+
+shutdown_services_freebsd()
+{
+    service htlc_service status > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        service htlc_service stop
+    fi
+}
+
+# ********************************************************************
+# Starting point
+# ********************************************************************
+
+# Setup OS-specific tools
+setup_tools
+
+# Change to the directory where the script is
+FULL_PATH=`echo $0 | sed -e "s/\(.*\)\/.*/\1/"`
+if [ "$FULL_PATH" != "$0" ] ; then
+    cd $FULL_PATH
+    echo "Installing from `pwd`"
+    echo ""
+fi
+
+opt_uninstall=0
+opt_uninstall_client=0
+full_client_install=0
+scriptable_install=0
+
+#"Identify OS for which some products are not supported."
+case `uname -s` in
+    HP-UX)
+        IS_OS_HP_UX=1
+    ;;
+    AIX)
+        IS_OS_AIX=1
+    ;;
+    [lL]inux)
+        IS_OS_LINUX=1
+    ;;
+esac
+
+
+if [ "$1" = "help" ] || [ "$1" = "HELP" ] ; then
+    display_install_help
+    exit 0
+fi
+
+# Scriptable install section
+if [ "$1" != "" ] ; then
+    scriptable_install=1
+    if [ "$1" = "remove_client" ] ; then
+        # Uninstall case
+        opt_uninstall=1
+        opt_uninstall_client=1
+    elif [ "$1" = "all" ] || [ "$1" = "ALL" ] ; then
+        # Scriptable install to install all Luna products and components
+        full_client_install=1
+    else
+        # Scriptable install with options provided
+        # Get all products and components pased in
+        scriptable_get_products_and_components "$*"
+
+        if [ "$products_list"  = "" ] && [ "$components_list" = "" ] ; then
+            echo "Installation error: Wrong options were given."
+            display_install_help
+            exit 1
+        fi
+
+        for product in $products_list
+        do
+            case "$product" in
+                sa|SA)
+                    LUNA_SA_SELECTED="*"
+                ;;
+
+                pci|PCI)
+                    LUNA_PCI_SELECTED="*"
+                ;;
+
+                g5|G5)
+                    LUNA_G5_SELECTED="*"
+                ;;
+
+                rb|RB)
+                    LUNA_REM_BACKUP_HSM_SELECTED="*"
+                ;;
+
+                g7|G7)
+                    LUNA_G7_SELECTED="*"
+                ;;
+
+                *)
+                    echo "ERROR: Invalid product (-p) option."
+                    display_install_help
+                    exit 1
+                ;;
+            esac
+        done
+
+        LUNA_SDK_SELECTED=" "
+        LUNA_JSP_SELECTED=" "
+        LUNA_JCPROV_SELECTED=" "
+        LUNA_SNMP_SELECTED=" "
+
+        if [ $IS_OS_AIX -eq 1 ]; then
+            LUNA_PCI_SELECTED=""
+            LUNA_G5_SELECTED=""
+            LUNA_REM_BACKUP_HSM_SELECTED=""
+        fi
+
+        if [ $IS_OS_HP_UX -eq 1 ]; then
+            LUNA_G5_SELECTED=""
+            LUNA_REM_BACKUP_HSM_SELECTED=""
+        fi
+
+        if [ $IS_OS_LINUX -ne 1 ] || [ $ENABLE_G7 -ne 1 ] ; then
+            LUNA_G7_SELECTED=""
+        fi
+
+        # If no components are passed in only the default components are installed
+        if [ "$components_list" = "" ] ; then
+            if [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_SA_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+                LUNA_SDK_SELECTED=" "
+                LUNA_JSP_SELECTED=" "
+                LUNA_JCPROV_SELECTED=" "
+            fi
+        elif [ "$components_list" = "all" ] ; then
+            LUNA_SDK_SELECTED="*"
+            LUNA_JSP_SELECTED="*"
+            LUNA_JCPROV_SELECTED="*"
+            if [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_REM_BACKUP_HSM_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+                LUNA_SNMP_SELECTED="*"
+            fi
+        else
+
+            # Get components list if any was passed in
+            for component in $components_list
+            do
+                case "$component" in
+                    sdk|SDK)
+                        if [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_SA_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+                            LUNA_SDK_SELECTED="*"
+                        else
+                            echo "ERROR: The specified component is not supported under the selected product."
+                            echo "Please try another option or no (-c) option."
+                            echo "Please note that $LUNA_REMOTE_BACKUP_STR (rb) only support Luna SNMP subagent product (snmp)."
+                            display_install_help
+                            exit 1
+                        fi
+                    ;;
+
+                    jsp|JSP)
+                        if [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_SA_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+                            LUNA_JSP_SELECTED="*"
+                        else
+                            echo "ERROR: The specified component is not supported under the selected product."
+                            echo "Please try another option or no (-c) option."
+                            echo "Please note that $LUNA_REMOTE_BACKUP_STR (rb) only support Luna SNMP subagent product (snmp)."
+                            display_install_help
+                            exit 1
+                        fi
+                    ;;
+
+                    jcprov|JCPROV)
+                        if [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_SA_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+                            LUNA_JCPROV_SELECTED="*"
+                        else
+                            echo "ERROR: The specified component is not supported under the selected product."
+                            echo "Please try another option or no (-c) option."
+                            echo "Please note that $LUNA_REMOTE_BACKUP_STR (rb) only support Luna SNMP subagent product (snmp)."
+                            display_install_help
+                            exit 1
+                        fi
+                    ;;
+
+                    snmp|SNMP)
+                        if [ "$LUNA_PCI_SELECTED" = "*" ] || [ "$LUNA_G5_SELECTED" = "*" ] || [ "$LUNA_REM_BACKUP_HSM_SELECTED" = "*" ] || [ "$LUNA_G7_SELECTED" = "*" ] ; then
+                            LUNA_SNMP_SELECTED="*"
+                        else
+                            echo "ERROR: The specified component is not supported under the selected product."
+                            echo "Please try another option or no (-c) option."
+                            echo "Please note that Luna SNMP subagent product (snmp) is not supported under $LUNA_SA_STR product (sa)."
+                            display_install_help
+                            exit 1
+                        fi
+                    ;;
+
+                    *)
+                        echo "ERROR: Invalid component (-c) option."
+                        display_install_help
+                        exit 1
+                    ;;
+                esac
+            done
+        fi
+    fi
+
+    get_os_info $opt_uninstall
+
+    if [ $opt_uninstall -ne 1 ] ; then
+
+        # Display License
+        display_license "$*"
+
+        if [ $full_client_install -eq 1 ] ; then
+            confirm_install
+
+            LUNA_SA_SELECTED="*"
+            LUNA_PCI_SELECTED="*"
+            LUNA_G5_SELECTED="*"
+            LUNA_G7_SELECTED="*"
+            LUNA_REM_BACKUP_HSM_SELECTED="*"
+            LUNA_SDK_SELECTED="*"
+            LUNA_JSP_SELECTED="*"
+            LUNA_JCPROV_SELECTED="*"
+            LUNA_SNMP_SELECTED="*"
+        fi
+        set_packages
+
+        check_random
+        save_conf_file
+
+        # Install Luna Client packages now
+        install_client "$client_pkgs"
+
+        # Do any required post-install steps.
+        finish_install
+    fi
+fi
+
+# Install using menu selections section
+if [ $scriptable_install -eq 0 ] && [ $opt_uninstall -ne 1 ] ; then
+    option=""
+    get_os_info $opt_uninstall
+
+    # Display License
+    display_license "$*"
+
+    select_luna_products_and_components
+    while [ "$option" = "b" ] || [ "$option" = "B" ]
+    do
+        select_luna_products_and_components
+    done;
+
+    # Set the packages list to be installed based on user selections
+    set_packages
+
+    # Show what is going to be installed
+    echo
+    echo "List of Luna Products to be installed:"
+    if [ "$sa_client_pkgs" != "" ] ; then
+        echo "- $LUNA_SA_STR"
+    fi
+    if [ "$pci_client_pkgs" != "" ] ; then
+        echo "- $LUNA_PCI_STR"
+    fi
+    if [ "$g5_client_pkgs" != "" ] ; then
+        echo "- $LUNA_G5_STR"
+    fi
+    if [ "$rb_client_pkgs" != "" ] ; then
+        echo "- $LUNA_REMOTE_BACKUP_STR"
+    fi
+    if [ "$g7_client_pkgs" != "" ] ; then
+        echo "- $LUNA_G7_STR"
+    fi
+
+    echo
+    echo "List of Luna Components to be installed:"
+    if [ "$sdk_pkgs" != "" ] ; then
+        echo "- $LUNA_SDK_STR"
+    fi
+    if [ "$jsp_pkgs" != "" ] ; then
+        echo "- Luna JSP (Java)"
+    fi
+    if [ "$jcprov_client_pkgs" != "" ] ; then
+        echo "- Luna JCProv (Java)"
+    fi
+    if [ "$snmp_client_pkgs" != "" ] ; then
+        echo "- Luna SNMP subagent"
+    fi
+    echo
+
+    # Check Random
+    check_random
+
+    # Save config file
+    save_conf_file
+
+    # Install Luna Client packages now
+    install_client "$client_pkgs"
+    # echo "Installation of the $LUNA_CLIENT_STR ${VERSION}-${RELEASE} completed."
+
+    # Do any required post-install steps.
+    finish_install
+fi
+
+if [ $opt_uninstall_client -eq 1 ] ; then
+    # Confirm uninstall
+    if [ "$2" != "" ] ; then
+        # confirm uninstall
+        echo ""
+        echo "Are you sure you want to uninstall the $LUNA_CLIENT_STR ${VERSION}-${RELEASE} features"
+        prompt_yes_no "specified? (y/n) "
+        if [ $? -eq 1 ] ; then
+            exit 1
+        fi
+    fi
+
+    CURRENT_DIR=$(pwd)
+    SCRIPT_DIR=$(dirname $0)
+    if [ $SCRIPT_DIR = '.' ] ; then
+        SCRIPT_DIR="$CURRENT_DIR"
+    fi
+    LUNA_DEST_PATH=$SCRIPT_DIR/../
+    # If it the OS supports custom install directory, non root user has a custom rpm database.
+    if [ $SUPPORTS_CUSTOM_INSTALL_DIRECTORY -eq 1 ] && [ $IS_ROOT_USER -eq 1 ] ; then
+        RPMDB_OPTION="--dbpath $LUNA_DEST_PATH/rpmdb"
+    fi
+
+    # If we are root, uninstall drivers and services.
+    if [ $IS_ROOT_USER -eq 0 ] ; then
+        # shutdown all SafeNet services
+        shutdown_services_$OSNAME
+
+        # verify drivers can be uninstalled
+        if [ "$OSNAME" = "hpux" ] || [  "$VKD_PKG" != "" ] ; then
+            DRIVER_NAME="vkd"
+            verify_uninstallable_driver $DRIVER_NAME
+        elif [  "$VKD_PKG" != "" ] ; then
+            verify_uninstallable_driver $VKD_PKG
+        fi
+
+        if [  "$UHD_PKG" != "" ] ; then
+            verify_uninstallable_driver $UHD_PKG
+        fi
+
+        if [  "$G7_PKG" != "" ] ; then
+            verify_uninstallable_driver $G7_PKG
+        fi
+    fi
+    # We are going to perform the uninstall.
+    # Uninstall client
+    if [ "$client_uninstall_pkgs" != "" ] ; then
+        uninstall_client "$client_uninstall_pkgs"
+    fi
+
+fi
+
+if [ $opt_uninstall_client -ne 0 ] ; then
+    # Remove scripts if there is no package installed
+    is_any_pkg_installed
+
+    if [ $? -ne 0 ] ; then
+       rm -f $LUNA_DEST_PATH/bin/common 2>/dev/null
+       rm -f $LUNA_DEST_PATH/bin/uninstall.sh 2>/dev/null
+    fi
+fi
