@@ -1,4 +1,4 @@
-module github.com/bryawnie/SoftHSM-script
+module github.com/clcert/beacon-scripts-hsm
 
 go 1.19
 

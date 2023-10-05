@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/akamensky/argparse"
-	"github.com/bryawnie/SoftHSM-script/utils"
+	"github.com/clcert/beacon-scripts-hsm/utils"
 	log "github.com/sirupsen/logrus"
 )
 
