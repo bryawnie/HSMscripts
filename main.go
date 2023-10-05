@@ -6,7 +6,8 @@ import (
 	"os"
 
 	"github.com/akamensky/argparse"
-	"github.com/clcert/beacon-scripts-hsm/utils"
+	"github.com/clcert/beacon-scripts-hsm/hsm"
+
 	log "github.com/sirupsen/logrus"
 )
 
@@ -15,7 +16,7 @@ func main() {
 	// Create new parser object
 	parser := argparse.NewParser("app", "")
 
-	// Create use mode flag
+	// Create use action flag
 	keygen := parser.NewCommand("keygen", "Generate a new keypair in the HSM")
 	sign := parser.NewCommand("sign", "Sign a message with a key in the HSM")
 	verify := parser.NewCommand("verify", "Verify a message with a key in the HSM")
@@ -41,12 +42,13 @@ func main() {
 
 	if keygen.Happened() {
 		log.Infof("Generating keypair in HSM with key label %s", *keyLabel)
-		utils.KeygenHSM(*moduleLocationHSM, *pin, *keyLabel)
+		hsm.Keygen(*moduleLocationHSM, *pin, *keyLabel)
 	} else if sign.Happened() {
 		log.Infof("Signing message %s with key label %s", *message, *keyLabel)
-		signature := utils.SignHSM(*moduleLocationHSM, *pin, *keyLabel, []byte(*message))
+		signature := hsm.SignMessage(*moduleLocationHSM, *pin, *keyLabel, []byte(*message))
 		strSign := hex.EncodeToString(signature)
 		log.Infof("Signature: %s", strSign)
+		hsm.VerifySignature(*moduleLocationHSM, *pin, "MyRSAKey-public", signature, []byte(*message))
 	} else if verify.Happened() {
 		byteSign, err := hex.DecodeString(*signature)
 		if err != nil {
@@ -54,7 +56,9 @@ func main() {
 			return
 		}
 		log.Infof("Verifying signature with message %s and key label %s", *message, *keyLabel)
-		b := utils.VerifyHSM(*moduleLocationHSM, *pin, *keyLabel, byteSign, []byte(*message))
+		log.Infof("Signature: %s", *signature)
+		log.Infof("ByteSignature: %v", byteSign)
+		b := hsm.VerifySignature(*moduleLocationHSM, *pin, *keyLabel, byteSign, []byte(*message))
 		if b {
 			log.Info("Signature verified successfully")
 		} else {
@@ -62,11 +66,11 @@ func main() {
 		}
 	} else if random.Happened() {
 		log.Infof("Generating random number")
-		random := utils.RandomHSM(*moduleLocationHSM, *pin)
+		random := hsm.GenerateRandomBytes(*moduleLocationHSM, *pin, 64)
 		strRandom := hex.EncodeToString(random)
 		log.Infof("Random number: %s", strRandom)
 	} else if extractPK.Happened() {
 		log.Infof("Extracting public key (.pem) with key label %s", *keyLabel)
-		utils.ExtractPublicKeyHSM(*moduleLocationHSM, *pin, *keyLabel)
+		hsm.ExportPublicKey(*moduleLocationHSM, *pin, *keyLabel)
 	}
 }
