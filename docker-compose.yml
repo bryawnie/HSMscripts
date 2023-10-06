@@ -13,5 +13,6 @@ services:
         - KEY_LABEL=${KEY_LABEL}
         - MESSAGE=${MESSAGE}
         - SIGNATURE=${SIGNATURE}
+        - CERTIFICATE_PATH=${CERTIFICATE_PATH}
     devices:
        - /dev/k7pf0
