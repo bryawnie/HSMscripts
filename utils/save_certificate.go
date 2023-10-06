@@ -1,8 +1,11 @@
 package utils
 
 import (
+	"bufio"
 	"encoding/hex"
+	"fmt"
 	"os"
+	"strings"
 
 	"github.com/clcert/beacon-scripts-hsm/db"
 	"github.com/clcert/beacon-scripts-hsm/hsm"
@@ -11,9 +14,28 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
+func requestConfirmation() bool {
+	reader := bufio.NewReader(os.Stdin)
+	log.Info("This operation will change the certificate in use for pulse generation. Do you want to continue? (y/N)")
+	userInput, err := reader.ReadString('\n')
+	if err != nil {
+		fmt.Println("Error reading input:", err)
+		return false
+	}
+	answer := strings.TrimSpace(userInput)
+	lowerAnswer := strings.ToLower(answer)
+	return lowerAnswer == "y" || lowerAnswer == "yes"
+}
+
 func SaveCertificate(moduleLocation, token_pin, publicKeyLabel string, certPath string) {
 	dbConn := db.ConnectDB()
 	defer dbConn.Close()
+
+	confirmation := requestConfirmation()
+	if !confirmation {
+		log.Info("Operation cancelled")
+		return
+	}
 
 	// Read the content of the file
 	certContent, err := os.ReadFile(certPath)
