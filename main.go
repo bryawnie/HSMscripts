@@ -7,6 +7,7 @@ import (
 
 	"github.com/akamensky/argparse"
 	"github.com/clcert/beacon-scripts-hsm/hsm"
+	"github.com/clcert/beacon-scripts-hsm/utils"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -22,6 +23,7 @@ func main() {
 	verify := parser.NewCommand("verify", "Verify a message with a key in the HSM")
 	random := parser.NewCommand("random", "Generate 512 random bites in the HSM")
 	pkExport := parser.NewCommand("export-key", "Export public key from the HSM")
+	certSave := parser.NewCommand("save-cert", "Save certificate in the HSM")
 
 	// Create parameter flags
 	moduleLocationHSM := parser.String("l", "location", &argparse.Options{Required: false, Default: "", Help: "HSM Module Location"})
@@ -30,6 +32,8 @@ func main() {
 
 	message := parser.String("m", "message", &argparse.Options{Required: false, Default: "", Help: "Message to sign"})
 	signature := parser.String("s", "signature", &argparse.Options{Required: false, Default: "", Help: "Signature to verify"})
+
+	certificatePath := parser.String("c", "certificate", &argparse.Options{Required: false, Default: "", Help: "Certificate path"})
 
 	// Parse input
 	err := parser.Parse(os.Args)
@@ -72,5 +76,9 @@ func main() {
 		log.Infof("Exporting public key with key label %s", publicKeyLabel)
 		pkPem := hsm.ExportPublicKey(*moduleLocationHSM, *pin, publicKeyLabel)
 		log.Infof("Public key: \n%s", pkPem)
+
+	} else if certSave.Happened() {
+		log.Infof("Saving certificate %s associated to keylabel %s", *certificatePath, publicKeyLabel)
+		utils.SaveCertificate(*moduleLocationHSM, *pin, publicKeyLabel, *certificatePath)
 	}
 }
