@@ -35,10 +35,16 @@ You can also verify a signature over some message under a keypair with keylabel 
 ./hsm-app verify -m "Your Message" -s <Signature> -l /path/to/libsofthsm2.so -p <TokenPin> -k <KeyLabel>
 ```
 
-### Extract Public Key
-You can also verify a signature over some message under a keypair with keylabel `<KeyLabel>` with:
+### Export Public Key
+Public key associated to `<KeyLabel>` can be exported with:
 ```
-./hsm-app extract-key -l /path/to/libsofthsm2.so -p <TokenPin> -k <KeyLabel>
+./hsm-app export-key -l /path/to/libsofthsm2.so -p <TokenPin> -k <KeyLabel>
+```
+
+### Save Certificate
+Certificate located at `<CertificatePath>` and associated to keypair with label `<KeyLabel>` can be saved into database with:
+```
+./hsm-app save-cert -l /path/to/libsofthsm2.so -p <TokenPin> -k <KeyLabel> -c <CertificatePath>
 ```
 
 ### [Alternative] Key Generation
@@ -76,5 +82,6 @@ KEY_LABEL=MyKeyLabel
 MODULE_LOCATION=path/to/libCryptoki2_64.so
 MESSAGE="My Message"
 SIGNATURE="My Signature"
+CERTIFICATE_PATH=path/to/certificate.pem
 ```
 
