@@ -20,7 +20,7 @@ func keygenHSM(p *pkcs11.Ctx, session pkcs11.SessionHandle, keyLabel string) {
 		pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
 		pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
 	}
-	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(SIGN_MECHANISM, nil)}
+	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(KEYGEN_MECHANISM, nil)}
 	_, _, err := p.GenerateKeyPair(session, mechanism, publicKeyTemplate, privateKeyTemplate)
 	if err != nil {
 		log.Errorf("Failed to generate key pair: %s\n", err)

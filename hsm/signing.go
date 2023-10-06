@@ -49,11 +49,13 @@ func verifyHSM(p *pkcs11.Ctx, session pkcs11.SessionHandle, keyLabel string, mes
 
 	err = p.Verify(session, message, signature)
 	if err == pkcs11.Error(pkcs11.CKR_SIGNATURE_INVALID) {
+		log.Error("Signature is invalid")
 		return defaultValue
 	} else if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to verify signature: %s\n", err)
 		return defaultValue
 	} else {
-		return defaultValue
+		log.Info("Signature is valid")
+		return true
 	}
 }

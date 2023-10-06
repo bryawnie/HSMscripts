@@ -23,7 +23,8 @@ const (
 	MODULUS_BITS    = 4096
 	PUBLIC_EXPONENT = 3
 	// RSASSA-PKCS1-v1.5 signature using SHA-512 hash algorithm
-	SIGN_MECHANISM = pkcs11.CKM_SHA512_RSA_PKCS
+	SIGN_MECHANISM   = pkcs11.CKM_SHA512_RSA_PKCS
+	KEYGEN_MECHANISM = pkcs11.CKM_RSA_PKCS_KEY_PAIR_GEN
 )
 
 func SignMessage(moduleLocation, pin, keyLabel string, message []byte) []byte {
@@ -109,7 +110,6 @@ func proxyHSM(params Params) []byte {
 	}
 
 	sessionSlot := slots[0]
-	log.Info("Opening session in HSM.")
 	session, err := p.OpenSession(sessionSlot, pkcs11.CKF_SERIAL_SESSION|pkcs11.CKF_RW_SESSION)
 	if err != nil {
 		log.Error("Failed opening session in HSM. Error: " + err.Error())
@@ -128,7 +128,7 @@ func proxyHSM(params Params) []byte {
 	case HSM_SIGN:
 		return signHSM(p, session, params.keyLabel, params.message, params.defaultValue)
 	case HSM_VERIFY:
-		if verifyHSM(p, session, params.keyLabel, params.message, params.defaultValue) {
+		if verifyHSM(p, session, params.keyLabel, params.message, params.signature) {
 			return []byte("1")
 		} else {
 			return []byte("0")
