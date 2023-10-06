@@ -4,18 +4,21 @@ import (
 	"fmt"
 
 	"github.com/clcert/beacon-scripts-hsm/db"
+	"github.com/clcert/beacon-scripts-hsm/hsm"
+
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/sha3"
 )
 
-func saveCertificate(moduleLocation, token_pin, publicKeyLabel string, certContent []byte) error {
+func SaveCertificate(moduleLocation, token_pin, publicKeyLabel string, certContent []byte) error {
 	dbConn := db.ConnectDB()
 	defer dbConn.Close()
 
 	digest := sha3.Sum512(certContent)
-	publicKey := ExtractPublicKeyHSM(moduleLocation, token_pin, publicKeyLabel, nil)
+	// Obtaining public key from HSM
+	publicKey := hsm.ExportPublicKey(moduleLocation, token_pin, publicKeyLabel)
 	if publicKey == nil {
-		return fmt.Errorf("Error getting public key from HSM")
+		return fmt.Errorf("error getting public key from HSM")
 	}
 	// Inserting certificate into DB
 	// TODO:
