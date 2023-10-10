@@ -14,7 +14,7 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-func requestConfirmation() bool {
+func RequestConfirmation() bool {
 	reader := bufio.NewReader(os.Stdin)
 	log.Info("This operation adds a new certificate in DB. Do you want to proceed? (y/N)")
 	userInput, err := reader.ReadString('\n')
@@ -76,11 +76,11 @@ func SaveCertificate(moduleLocation, token_pin, keyLabel string, certPath string
 	log.Infof("Public Key: \n%s", publicKey)
 	log.Infof("Certificate: \n%s", string(certContent))
 	log.Infof("Certificate ID: %s", hashedCert)
-	confirmation := requestConfirmation()
-	if !confirmation {
-		log.Info("Operation cancelled")
-		return
-	}
+	// confirmation := requestConfirmation()
+	// if !confirmation {
+	// 	log.Info("Operation cancelled")
+	// 	return
+	// }
 
 	// To be considered: since certificates are searched by their name, status is actually not needed.
 	insertCertificateStatement := `INSERT INTO certificates (name, public_key, certificate, certificate_id, status) VALUES ($1, $2, $3, $4, $5);`
