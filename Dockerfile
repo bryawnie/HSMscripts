@@ -20,6 +20,15 @@ COPY lunaclient/ /usr/safenet/lunaclient
 ARG CERTIFICATE_PATH
 COPY ${CERTIFICATE_PATH} /go/bin/cert.pem
 
+ARG POSTGRES_HOST
+RUN sed -i "s/DB_HOST/${POSTGRES_HOST}/g" /go/bin/db/dbConfig.json
+ARG POSTGRES_USER
+RUN sed -i "s/DB_USER/${POSTGRES_USER}/g" /go/bin/db/dbConfig.json
+ARG POSTGRES_PASSWORD
+RUN sed -i "s/DB_PASSWORD/${POSTGRES_PASSWORD}/g" /go/bin/db/dbConfig.json
+ARG POSTGRES_DB
+RUN sed -i "s/DB_NAME/${POSTGRES_DB}/g" /go/bin/db/dbConfig.json
+
 ARG SUBCOMMAND
 ARG MODULE_LOCATION
 ARG TOKEN_PIN
