@@ -14,7 +14,7 @@ func exportPublicKeyHSM(p *pkcs11.Ctx, session pkcs11.SessionHandle, keyLabel st
 	// find public key
 	pbk, err := findHSMkeys(p, session, keyLabel, pkcs11.CKO_PUBLIC_KEY)
 	if err != nil {
-		log.Error("Keys not found: ", err.Error())
+		log.Errorf("Key %s not found: %s", keyLabel, err.Error())
 		return defaultValue
 	}
 
