@@ -12,6 +12,7 @@ FROM alpine:3.18
 RUN apk --no-cache add gcc g++ && ln -s /lib/libc.musl-x86_64.so.1 /lib/ld-linux-x86-64.so.2
 
 COPY --from=builder /go/app/bin /go/bin
+COPY --from=builder /go/app/db/dbConfig.json /go/bin/db/dbConfig.json
 
 RUN mkdir -p /usr/safenet/lunaclient
 COPY lunaclient/ /usr/safenet/lunaclient
