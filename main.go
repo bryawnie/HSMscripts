@@ -48,7 +48,7 @@ func main() {
 	privateKeyLabel := *keyLabel + "-private"
 
 	if keygen.Happened() {
-		log.Infof("Generating keypair in HSM with key label '%s'", *keyLabel)
+		log.Infof("Generating keypair in HSM with key labels '%s-{private, public}'", *keyLabel)
 		hsm.Keygen(*moduleLocationHSM, *pin, *keyLabel)
 
 	} else if sign.Happened() {
@@ -60,7 +60,7 @@ func main() {
 	} else if verify.Happened() {
 		byteSign, err := hex.DecodeString(*signature)
 		if err != nil {
-			log.Errorf("Error decoding hex string: %v\n", err)
+			log.Errorf("Error decoding hex string: '%v'\n", err)
 			return
 		}
 		log.Infof("Verifying signature with message '%s' and key label '%s'", *message, publicKeyLabel)
@@ -73,12 +73,12 @@ func main() {
 		log.Infof("Random number: %s", strRandom)
 
 	} else if pkExport.Happened() {
-		log.Infof("Exporting public key with key label %s", publicKeyLabel)
+		log.Infof("Exporting public key with key label '%s'", publicKeyLabel)
 		pkPem := hsm.ExportPublicKey(*moduleLocationHSM, *pin, publicKeyLabel)
 		log.Infof("Public key: \n%s", pkPem)
 
 	} else if certSave.Happened() {
-		log.Infof("Saving certificate %s associated to keylabel %s", *certificatePath, publicKeyLabel)
-		utils.SaveCertificate(*moduleLocationHSM, *pin, publicKeyLabel, *certificatePath)
+		log.Infof("Saving certificate '%s' associated to keylabel '%s-{private, public}'.", *certificatePath, *keyLabel)
+		utils.SaveCertificate(*moduleLocationHSM, *pin, *keyLabel, *certificatePath)
 	}
 }

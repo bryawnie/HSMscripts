@@ -4,6 +4,7 @@ This basic script allows you to:
 - Sign some content (a message) with the keys in HSM.
 - Verify a signature issued by HSM, given the corresponding message.
 - Generate random bytes (64 bytes to be precise).
+
 ## Using SoftHSM
 Instead of usinga real HSM, you can download and install SoftHSM ([download](https://dist.opendnssec.org/source/) | [installation guide](https://wiki.opendnssec.org/display/SoftHSMDOCS/SoftHSM+Documentation+v2)). When installing softHSM, I recommend to write down `<TokenPin>` and `<TokenLabel>`. Also, you will need to know the path location of `libsofthsm2.so`:
 > The most common paths to `libsofthsm2.so` are:
@@ -84,4 +85,6 @@ MESSAGE="My Message"
 SIGNATURE="My Signature"
 CERTIFICATE_PATH=path/to/certificate.pem
 ```
+
+*__IMPORTANT__: a certificate file must be created in order to ensure correct execution.*
 
