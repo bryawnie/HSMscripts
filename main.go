@@ -6,8 +6,8 @@ import (
 	"os"
 
 	"github.com/akamensky/argparse"
+	"github.com/clcert/beacon-scripts-hsm/db"
 	"github.com/clcert/beacon-scripts-hsm/hsm"
-	"github.com/clcert/beacon-scripts-hsm/utils"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -79,6 +79,6 @@ func main() {
 
 	} else if certSave.Happened() {
 		log.Infof("Saving certificate '%s' associated to keylabel '%s-{private, public}'.", *certificatePath, *keyLabel)
-		utils.SaveCertificate(*moduleLocationHSM, *pin, *keyLabel, *certificatePath)
+		db.SaveCertificate(*moduleLocationHSM, *pin, *keyLabel, *certificatePath)
 	}
 }

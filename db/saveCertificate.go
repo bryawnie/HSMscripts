@@ -1,4 +1,4 @@
-package utils
+package db
 
 import (
 	"bufio"
@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/clcert/beacon-scripts-hsm/db"
 	"github.com/clcert/beacon-scripts-hsm/hsm"
 
 	log "github.com/sirupsen/logrus"
@@ -17,7 +16,7 @@ import (
 
 func requestConfirmation() bool {
 	reader := bufio.NewReader(os.Stdin)
-	log.Info("This operation add a new certificate in DB. Do you want to proceed? (y/N)")
+	log.Info("This operation adds a new certificate in DB. Do you want to proceed? (y/N)")
 	userInput, err := reader.ReadString('\n')
 	if err != nil {
 		fmt.Println("Error reading input:", err)
@@ -29,7 +28,7 @@ func requestConfirmation() bool {
 }
 
 func existsCertificateInDB(id string) bool {
-	dbConn := db.ConnectDB()
+	dbConn := ConnectDB()
 	defer dbConn.Close()
 
 	var certificateID string
@@ -46,7 +45,7 @@ func existsCertificateInDB(id string) bool {
 }
 
 func SaveCertificate(moduleLocation, token_pin, keyLabel string, certPath string) {
-	dbConn := db.ConnectDB()
+	dbConn := ConnectDB()
 	defer dbConn.Close()
 
 	// Read the content of the file
@@ -55,14 +54,8 @@ func SaveCertificate(moduleLocation, token_pin, keyLabel string, certPath string
 		log.Fatalf("error reading file: %v", err)
 		return
 	}
-
 	digest := sha3.Sum512(certContent)
 	hashedCert := hex.EncodeToString(digest[:])
-	publicKey := hsm.ExportPublicKey(moduleLocation, token_pin, keyLabel)
-	if string(publicKey) == "" {
-		log.Errorf("error getting public key from HSM")
-		return
-	}
 
 	// Check if certificate already exists in DB
 	if existsCertificateInDB(hashedCert) {
@@ -70,12 +63,19 @@ func SaveCertificate(moduleLocation, token_pin, keyLabel string, certPath string
 		return
 	}
 
+	publicKeyLabel := keyLabel + "-public"
+	publicKey := hsm.ExportPublicKey(moduleLocation, token_pin, publicKeyLabel)
+	if string(publicKey) == "" {
+		log.Errorf("error getting public key from HSM")
+		return
+	}
+
 	// Request confirmation
 	log.Info("The following certificate will be inserted into DB:")
 	log.Infof("Name: %s", keyLabel)
-	log.Infof("Public Key: %s\n", publicKey)
-	log.Infof("Certificate: %s\n", certContent)
-	log.Infof("Certificate ID: %s\n", hashedCert)
+	log.Infof("Public Key: \n%s", publicKey)
+	log.Infof("Certificate: \n%s", string(certContent))
+	log.Infof("Certificate ID: %s", hashedCert)
 	confirmation := requestConfirmation()
 	if !confirmation {
 		log.Info("Operation cancelled")
@@ -84,9 +84,10 @@ func SaveCertificate(moduleLocation, token_pin, keyLabel string, certPath string
 
 	// To be considered: since certificates are searched by their name, status is actually not needed.
 	insertCertificateStatement := `INSERT INTO certificates (name, public_key, certificate, certificate_id, status) VALUES ($1, $2, $3, $4, $5);`
-	_, err = dbConn.Exec(insertCertificateStatement, keyLabel, publicKey, certContent, digest[:], 1)
+	_, err = dbConn.Exec(insertCertificateStatement, keyLabel, publicKey, certContent, hashedCert, 1)
 	if err != nil {
 		log.Fatalf("Error inserting certificate into DB: %v", err)
 		return
 	}
+	log.Info("Certificate inserted successfully")
 }
